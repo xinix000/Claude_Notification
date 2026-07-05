@@ -241,6 +241,28 @@ class TestClaudeCodeToken(unittest.TestCase):
             notify._claude_code_token = orig
 
 
+class TestTeamsPayload(unittest.TestCase):
+    def test_structure(self):
+        p = notify.build_teams_payload("stop", "เสร็จแล้ว", {"cwd": r"C:\proj\App"}, {})
+        self.assertEqual(p["type"], "message")
+        card = p["attachments"][0]["content"]
+        self.assertEqual(card["type"], "AdaptiveCard")
+        self.assertTrue(any("สรุป" in b.get("text", "") for b in card["body"]))
+        facts = [b for b in card["body"] if b.get("type") == "FactSet"][0]["facts"]
+        self.assertIn("📁 Project", [f["title"] for f in facts])
+
+    def test_color_maps_event(self):
+        p = notify.build_teams_payload("error", "พัง", {}, {}, summary="x")
+        self.assertEqual(p["attachments"][0]["content"]["body"][0]["color"], "attention")
+
+    def test_summary_shared_across_channels(self):
+        # main คำนวณสรุปครั้งเดียวแล้วส่งเข้าทั้งสอง builder → ต้องใช้ค่าที่ส่งมา
+        d = notify.build_payload("stop", "x", {}, {}, summary="ONE")
+        t = notify.build_teams_payload("stop", "x", {}, {}, summary="ONE")
+        self.assertIn("ONE", d["embeds"][0]["description"])
+        self.assertTrue(any("ONE" in b.get("text", "") for b in t["attachments"][0]["content"]["body"]))
+
+
 class TestReadStdin(unittest.TestCase):
     """กัน regression: payload ภาษาไทยจาก stdin ต้อง decode UTF-8 ถูก
     (เคยพัง — codec Windows ทำเป็น surrogate จน encode ส่ง Discord ไม่ได้)"""

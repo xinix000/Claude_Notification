@@ -1,5 +1,6 @@
 {
   "webhook_url": "https://discord.com/api/webhooks/xxxx/yyyy",
+  "teams_webhook_url": "",
 
   "anthropic_api_key": "",
   "oauth_token": "",

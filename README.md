@@ -1,6 +1,6 @@
 # Discord Notify สำหรับ Claude Code
 
-แจ้งเตือนเข้า **Discord** อัตโนมัติเมื่อ Claude Code:
+แจ้งเตือนเข้า **Discord และ/หรือ Microsoft Teams** อัตโนมัติเมื่อ Claude Code:
 - ✅ ทำงานเสร็จ (`Stop`) — สีเขียว
 - ❓ มีคำถามให้ตอบ (`PreToolUse` / AskUserQuestion) — สีส้ม
 - 📋 เสนอแผน รออนุมัติ (`PreToolUse` / ExitPlanMode) — สีม่วง
@@ -38,6 +38,7 @@
 - `ai_summary` — `true`/`false` เปิด-ปิดสรุปด้วย AI (ดีฟอลต์ `true` เมื่อมี key/token)
 - `mention_user_id` — Discord user id ของคุณ เพื่อ **แท็ก @ (มือถือเด้งแรง)** ตอน event สำคัญ
 - `mention_events` — เลือกว่าจะแท็กตอนไหน (ดีฟอลต์ `["error","ask","plan","notification"]`)
+- `teams_webhook_url` — ส่งเข้า **Microsoft Teams** ด้วย (ตั้งพร้อม Discord หรือใช้อย่างเดียวก็ได้) → วิธีเอา URL ดู [ส่งเข้า Microsoft Teams](#5-ออปชัน-ส่งเข้า-microsoft-teams)
 
 > `notify_config.json` ถูก `.gitignore` (มี webhook + key ลับ) — ห้าม commit
 
@@ -54,6 +55,16 @@ python notify.py --test
 โดย merge กับ hook เดิมที่มีอยู่ ไม่ทับของเก่า แล้ว **รีสตาร์ต Claude Code** หนึ่งครั้ง
 
 > ถอนออกเมื่อไรก็ได้ด้วย `python notify.py --uninstall-hooks`
+
+### 5) (ออปชัน) ส่งเข้า Microsoft Teams
+Teams รองรับผ่าน **Workflows** (connector "Incoming Webhook" แบบเก่า Microsoft ยกเลิกแล้ว):
+1. ในห้อง Teams → **⋯ ข้างชื่อห้อง → Workflows** → เทมเพลต **"Post to a channel when a webhook request is received"**
+2. เลือก Team + Channel → **Add workflow** → **ก็อป URL** ที่ได้
+3. วางลง `teams_webhook_url` ใน `notify_config.json` (ตั้งคู่กับ Discord ได้ — ส่งทั้งสองที่)
+```powershell
+python notify.py --test   # ทดสอบทุกช่องทางที่ตั้งไว้
+```
+> ใช้รูปแบบ **Adaptive Card** · บาง org ปิดการสร้าง Workflow — ถ้าสร้างไม่ได้ต้องให้ admin เปิดให้ · Teams ยังไม่รองรับแท็ก @ (ต้องใช้ AAD id เพิ่ม)
 
 ---
 
@@ -88,7 +99,7 @@ python notify.py --event error --text "เกิดปัญหา: build ล้
 ## ไฟล์ในโปรเจกต์
 | ไฟล์ | หน้าที่ |
 |------|---------|
-| `notify.py` | ส่ง Discord + สรุป (heuristic/AI) + ติดตั้ง/ถอน hook |
+| `notify.py` | ส่ง Discord/Teams + สรุป (heuristic/AI) + ติดตั้ง/ถอน hook |
 | `setup_hook.bat` | ดับเบิลคลิกติดตั้ง hook ระดับ user |
 | `notify_config.example.json` | ตัวอย่างคีย์ config ทั้งหมด (ไม่มีความลับ) |
 | `notify_config.json` | webhook + API key จริง (ถูก `.gitignore`) |

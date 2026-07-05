@@ -148,8 +148,12 @@ def load_config():
     oauth_token = (cfg.get("oauth_token") or "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", oauth_token).strip()
 
+    teams = (cfg.get("teams_webhook_url") or "").strip()
+    teams = os.environ.get("TEAMS_WEBHOOK_URL", teams).strip()
+
     return {
         "webhook_url": webhook,
+        "teams_webhook_url": teams,
         "anthropic_api_key": api_key,
         "oauth_token": oauth_token,
         # ขอ token สดจาก `ant auth print-credentials` ตอนเรียก (auto-refresh)
@@ -496,12 +500,12 @@ def resolve_summary(event, body, config):
     return short_summary(event, body)
 
 
-def build_payload(event, text, payload, config=None):
+def build_payload(event, text, payload, config=None, summary=None):
     config = config or {}
     proj = project_name(payload)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    body = resolve_body(event, text, payload)
-    summary = resolve_summary(event, body, config)  # สรุปสั้น ๆ ภาษาไทย
+    if summary is None:  # main คำนวณครั้งเดียวแล้วส่งมา (กัน AI ยิงซ้ำหลายช่องทาง)
+        summary = resolve_summary(event, resolve_body(event, text, payload), config)
 
     # เอาแค่สรุปสั้น 1 ย่อหน้า ไม่ดั๊มพ์ข้อความเต็ม (เยอะเกินไป อ่านยากบนมือถือ)
     embed = {
@@ -521,6 +525,46 @@ def build_payload(event, text, payload, config=None):
         data["content"] = f"<@{mention_id}> {TITLES.get(event, TITLES['manual'])}"
         data["allowed_mentions"] = {"parse": ["users"]}
     return data
+
+
+# สี Adaptive Card ของ Teams (มีชุดจำกัด ไม่ใช่ hex อิสระแบบ Discord)
+TEAMS_COLORS = {
+    "stop": "good", "notification": "warning", "error": "attention",
+    "test": "accent", "ask": "warning", "plan": "accent", "manual": "default",
+}
+
+
+def build_teams_payload(event, text, payload, config=None, summary=None):
+    """สร้าง payload ให้ Microsoft Teams (Adaptive Card ผ่าน Workflows webhook)"""
+    config = config or {}
+    proj = project_name(payload)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if summary is None:
+        summary = resolve_summary(event, resolve_body(event, text, payload), config)
+
+    card = {
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.4",
+        "body": [
+            {"type": "TextBlock", "text": TITLES.get(event, TITLES["manual"]),
+             "weight": "Bolder", "size": "Medium", "wrap": True,
+             "color": TEAMS_COLORS.get(event, "default")},
+            {"type": "TextBlock", "text": f"📝 **สรุป:** {summary}", "wrap": True},
+            {"type": "FactSet", "facts": [
+                {"title": "📁 Project", "value": proj},
+                {"title": "🕒 เวลา", "value": ts},
+            ]},
+        ],
+    }
+    # ห่อแบบ Workflows/Power Automate ("Post to a channel when a webhook request is received")
+    return {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": card,
+        }],
+    }
 
 
 def send(webhook_url, data_obj):
@@ -595,40 +639,54 @@ def main():
         text = " ".join(args.positional)
 
     config = load_config()
-    webhook_url = config["webhook_url"]
-    not_configured = (
-        not webhook_url
-        or webhook_url.startswith("<")
-        or not webhook_url.startswith("https://")
-    )
-    if not_configured:
+
+    def _valid_url(u):
+        return bool(u) and u.startswith("https://") and not u.startswith("<")
+
+    # คำนวณสรุปครั้งเดียว แล้วแชร์ให้ทุกช่องทาง (กัน AI ยิงซ้ำ)
+    summary = resolve_summary(event, resolve_body(event, text, payload), config)
+
+    channels = []
+    if _valid_url(config.get("webhook_url")):
+        channels.append((
+            "Discord", config["webhook_url"],
+            build_payload(event, text, payload, config, summary=summary),
+        ))
+    if _valid_url(config.get("teams_webhook_url")):
+        channels.append((
+            "Teams", config["teams_webhook_url"],
+            build_teams_payload(event, text, payload, config, summary=summary),
+        ))
+
+    if not channels:
         log(f"config ยังไม่ครบ (event={event}) — ข้ามการส่ง")
         if is_hook:
             return 0  # อย่าทำให้ hook ล้ม
         print(
-            "⛔ ยังไม่ได้ตั้งค่า webhook_url ใน notify_config.json",
+            "⛔ ยังไม่ได้ตั้งค่า webhook (Discord/Teams) ใน notify_config.json",
             file=sys.stderr,
         )
         return 2
 
-    data_obj = build_payload(event, text, payload, config)
-    try:
-        status, body = send(webhook_url, data_obj)
-        log(f"ส่งสำเร็จ event={event} status={status}")
-        if not is_hook:
-            print(f"✅ ส่ง Discord สำเร็จ (status={status})")
-        return 0
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8", "replace")
-        log(f"ส่งไม่สำเร็จ event={event} HTTP {e.code}: {err_body}")
-        if not is_hook:
-            print(f"⛔ Discord error HTTP {e.code}: {err_body}", file=sys.stderr)
-        return 0 if is_hook else 1
-    except Exception as e:
-        log(f"ส่งไม่สำเร็จ event={event}: {e}")
-        if not is_hook:
-            print(f"⛔ ส่งไม่สำเร็จ: {e}", file=sys.stderr)
-        return 0 if is_hook else 1
+    # ส่งทุกช่องทางแบบอิสระ — ช่องนึงล้มไม่กระทบอีกช่อง
+    ok_any = False
+    for name, url, data_obj in channels:
+        try:
+            status, _ = send(url, data_obj)
+            log(f"ส่งสำเร็จ event={event} ({name}) status={status}")
+            ok_any = True
+            if not is_hook:
+                print(f"✅ ส่ง {name} สำเร็จ (status={status})")
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", "replace")
+            log(f"ส่งไม่สำเร็จ event={event} ({name}) HTTP {e.code}: {err_body}")
+            if not is_hook:
+                print(f"⛔ {name} error HTTP {e.code}: {err_body}", file=sys.stderr)
+        except Exception as e:
+            log(f"ส่งไม่สำเร็จ event={event} ({name}): {e}")
+            if not is_hook:
+                print(f"⛔ {name} ส่งไม่สำเร็จ: {e}", file=sys.stderr)
+    return 0 if (is_hook or ok_any) else 1
 
 
 if __name__ == "__main__":
