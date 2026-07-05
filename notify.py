@@ -154,6 +154,8 @@ def load_config():
         "oauth_token": oauth_token,
         # ขอ token สดจาก `ant auth print-credentials` ตอนเรียก (auto-refresh)
         "oauth_from_ant": bool(cfg.get("oauth_from_ant", False)),
+        # ดึง token จาก Claude Code login (~/.claude/.credentials.json) ที่ login ไว้แล้ว
+        "oauth_from_claude_code": bool(cfg.get("oauth_from_claude_code", False)),
         # สรุปด้วย AI เมื่อมี key/token (ปิดได้ด้วย "ai_summary": false)
         "ai_summary": bool(cfg.get("ai_summary", True)),
         # แท็ก @ ตอน event สำคัญ ให้มือถือเด้งชัด (default: error + ตอนรอคุณ)
@@ -356,10 +358,49 @@ def _ant_token():
         return ""
 
 
+def _find_access_token(obj):
+    """หา accessToken จาก JSON โครงสร้างไหนก็ได้ (best-effort, ไม่แตะ refreshToken)"""
+    if isinstance(obj, dict):
+        for k in ("accessToken", "access_token"):
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        for v in obj.values():
+            t = _find_access_token(v)
+            if t:
+                return t
+    elif isinstance(obj, list):
+        for v in obj:
+            t = _find_access_token(v)
+            if t:
+                return t
+    return ""
+
+
+def _claude_code_token(path=None):
+    """อ่าน OAuth access token จาก credential store ของ Claude Code (ที่ login ไว้)
+
+    best-effort: ไฟล์ไม่มี/อ่านไม่ได้ → คืน "" (ให้ fallback).
+    หมายเหตุ: token นี้เป็นของ subscription อาจถูก /v1/messages ปฏิเสธ หรือหมดอายุ
+    ได้ — ถ้าพลาด ai_summary จะ fallback ไปสรุปแบบตัดคำเอง
+    """
+    try:
+        if path is None:
+            home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+            path = Path(home) / ".claude" / ".credentials.json"
+        path = Path(path)
+        if not path.exists():
+            return ""
+        return _find_access_token(json.loads(path.read_text(encoding="utf-8")))
+    except Exception as e:
+        log(f"อ่าน claude code token ไม่ได้: {e}")
+        return ""
+
+
 def resolve_auth(config):
     """เลือกวิธี auth เรียก Anthropic API — คืน (scheme, token)
 
-    ลำดับ: oauth_token > anthropic_api_key > oauth_from_ant
+    ลำดับ: oauth_token > anthropic_api_key > oauth_from_ant > oauth_from_claude_code
     - "bearer"    = OAuth (ต้องแนบ header anthropic-beta: oauth-2025-04-20)
     - "x-api-key" = API key ปกติ (ถาวร)
     """
@@ -372,6 +413,10 @@ def resolve_auth(config):
         return "x-api-key", api_key
     if config.get("oauth_from_ant"):
         tok = _ant_token()
+        if tok:
+            return "bearer", tok
+    if config.get("oauth_from_claude_code"):
+        tok = _claude_code_token()
         if tok:
             return "bearer", tok
     return None, ""

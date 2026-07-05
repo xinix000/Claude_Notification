@@ -219,5 +219,26 @@ class TestResolveAuth(unittest.TestCase):
         self.assertIsNone(notify.ai_summary("x" * 300, (None, "")))
 
 
+class TestClaudeCodeToken(unittest.TestCase):
+    def test_reads_access_token(self):
+        p = Path(tempfile.mkdtemp()) / ".credentials.json"
+        p.write_text(json.dumps({"claudeAiOauth": {"accessToken": "oat-abc"}}),
+                     encoding="utf-8")
+        self.assertEqual(notify._claude_code_token(p), "oat-abc")
+
+    def test_missing_file_returns_empty(self):
+        self.assertEqual(notify._claude_code_token(Path(tempfile.mkdtemp()) / "nope.json"), "")
+
+    def test_resolve_auth_uses_claude_code(self):
+        orig = notify._claude_code_token
+        notify._claude_code_token = lambda *a, **k: "oat-cc"
+        try:
+            self.assertEqual(
+                notify.resolve_auth({"oauth_from_claude_code": True}), ("bearer", "oat-cc")
+            )
+        finally:
+            notify._claude_code_token = orig
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

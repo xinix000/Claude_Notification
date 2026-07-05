@@ -4,6 +4,7 @@
   "anthropic_api_key": "",
   "oauth_token": "",
   "oauth_from_ant": false,
+  "oauth_from_claude_code": false,
   "ai_summary": true,
 
   "mention_user_id": "",
