@@ -1,0 +1,10 @@
+# ข้อมูลลับ — อย่า commit
+notify_config.json
+notify.log
+
+# Python
+__pycache__/
+*.pyc
+
+# แคช/เครื่องมือเฉพาะเครื่อง
+.impeccable/
