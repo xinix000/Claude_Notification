@@ -30,8 +30,12 @@
 }
 ```
 คีย์เสริม (ใส่หรือไม่ก็ได้):
-- `anthropic_api_key` — ใส่ Claude API key เพื่อให้ **Haiku สรุปงานให้** ตอน `Stop`; เว้นว่าง = ใช้สรุปแบบตัดคำ
-- `ai_summary` — `true`/`false` เปิด-ปิดสรุปด้วย AI (ดีฟอลต์ `true` เมื่อมี key)
+- `anthropic_api_key` — Claude API key (`x-api-key`) เพื่อให้ **Haiku สรุปงานให้** ตอน `Stop`; เว้นว่าง = สรุปแบบตัดคำ · **แนะนำ (ถาวร ไม่หมดอายุ)**
+- ใช้ **OAuth แทน API key** ก็ได้ (ลำดับความสำคัญ: `oauth_token` > `anthropic_api_key` > `oauth_from_ant`):
+  - `oauth_token` — วาง OAuth access token ตรง ๆ → ใช้ `Authorization: Bearer` + `anthropic-beta: oauth-2025-04-20` · ⚠️ **token หมดอายุ ต้องเปลี่ยนเรื่อย ๆ**
+  - `oauth_from_ant: true` — ให้สคริปต์ขอ token สดจาก `ant auth print-credentials` ตอนเรียก (auto-refresh) · ต้องลง [`ant` CLI](https://platform.claude.com/docs/en/api/sdks/cli) + `ant auth login` ก่อน
+  - หมายเหตุ: token ใน `~/.claude/.credentials.json` เป็นของ **Claude Code subscription** ซึ่งอาจถูก API ปฏิเสธ (คนละสโคปกับ dev OAuth) — ถ้าจะใช้ OAuth จริงจัง แนะนำ `ant auth login`
+- `ai_summary` — `true`/`false` เปิด-ปิดสรุปด้วย AI (ดีฟอลต์ `true` เมื่อมี key/token)
 - `mention_user_id` — Discord user id ของคุณ เพื่อ **แท็ก @ (มือถือเด้งแรง)** ตอน event สำคัญ
 - `mention_events` — เลือกว่าจะแท็กตอนไหน (ดีฟอลต์ `["error","ask","plan","notification"]`)
 

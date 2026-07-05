@@ -2,6 +2,8 @@
   "webhook_url": "https://discord.com/api/webhooks/xxxx/yyyy",
 
   "anthropic_api_key": "",
+  "oauth_token": "",
+  "oauth_from_ant": false,
   "ai_summary": true,
 
   "mention_user_id": "",

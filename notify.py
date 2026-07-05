@@ -21,6 +21,7 @@ import os
 import re
 import json
 import argparse
+import subprocess
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -144,10 +145,16 @@ def load_config():
     api_key = (cfg.get("anthropic_api_key") or "").strip()
     api_key = os.environ.get("ANTHROPIC_API_KEY", api_key).strip()
 
+    oauth_token = (cfg.get("oauth_token") or "").strip()
+    oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", oauth_token).strip()
+
     return {
         "webhook_url": webhook,
         "anthropic_api_key": api_key,
-        # สรุปด้วย AI เมื่อมี key (ปิดได้ด้วย "ai_summary": false)
+        "oauth_token": oauth_token,
+        # ขอ token สดจาก `ant auth print-credentials` ตอนเรียก (auto-refresh)
+        "oauth_from_ant": bool(cfg.get("oauth_from_ant", False)),
+        # สรุปด้วย AI เมื่อมี key/token (ปิดได้ด้วย "ai_summary": false)
         "ai_summary": bool(cfg.get("ai_summary", True)),
         # แท็ก @ ตอน event สำคัญ ให้มือถือเด้งชัด (default: error + ตอนรอคุณ)
         "mention_user_id": (cfg.get("mention_user_id") or "").strip(),
@@ -333,17 +340,68 @@ ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 SUMMARY_MODEL = "claude-haiku-4-5"
 
 
-def ai_summary(body, api_key, timeout=6):
+def _ant_token():
+    """ขอ access token สด ๆ จาก `ant auth print-credentials --access-token`
+
+    เป็นวิธี OAuth ที่ auto-refresh (ต้องลง ant CLI + `ant auth login` มาก่อน)
+    """
+    try:
+        out = subprocess.run(
+            ["ant", "auth", "print-credentials", "--access-token"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return (out.stdout or "").strip()
+    except Exception as e:
+        log(f"ขอ ant token ไม่ได้: {e}")
+        return ""
+
+
+def resolve_auth(config):
+    """เลือกวิธี auth เรียก Anthropic API — คืน (scheme, token)
+
+    ลำดับ: oauth_token > anthropic_api_key > oauth_from_ant
+    - "bearer"    = OAuth (ต้องแนบ header anthropic-beta: oauth-2025-04-20)
+    - "x-api-key" = API key ปกติ (ถาวร)
+    """
+    config = config or {}
+    oauth = (config.get("oauth_token") or "").strip()
+    if oauth:
+        return "bearer", oauth
+    api_key = (config.get("anthropic_api_key") or "").strip()
+    if api_key:
+        return "x-api-key", api_key
+    if config.get("oauth_from_ant"):
+        tok = _ant_token()
+        if tok:
+            return "bearer", tok
+    return None, ""
+
+
+def ai_summary(body, auth, timeout=6):
     """เรียก Claude (Haiku) สรุปเป็นไทย 1-2 ประโยค — คืน None ถ้าพลาด (ให้ fallback)
 
+    auth = (scheme, token) โดย scheme เป็น "bearer" (OAuth) หรือ "x-api-key"
     ใช้ urllib ล้วน ไม่พึ่ง SDK เพื่อคงสภาพ zero-dependency ของโปรเจกต์
     """
+    scheme, token = auth
+    if not token:
+        return None
     system = (
         "คุณคือผู้ช่วยสรุปงานของ Claude Code ให้ผู้ใช้ชาวไทย "
         "สรุปข้อความต่อไปนี้เป็นภาษาไทยสั้น ๆ ไม่เกิน 1-2 ประโยค (ราว 120 ตัวอักษร) "
         "เน้นใจความว่าทำอะไรเสร็จหรือติดปัญหาอะไร "
         "ตอบเฉพาะบทสรุปล้วน ๆ ห้ามมีคำนำ ห้ามใช้ markdown"
     )
+    headers = {
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01",
+    }
+    if scheme == "bearer":
+        # OAuth token: ใช้ Authorization: Bearer + ต้องมี beta header นี้
+        headers["authorization"] = f"Bearer {token}"
+        headers["anthropic-beta"] = "oauth-2025-04-20"
+    else:
+        headers["x-api-key"] = token
     req_obj = {
         "model": SUMMARY_MODEL,
         "max_tokens": 200,
@@ -353,14 +411,7 @@ def ai_summary(body, api_key, timeout=6):
     try:
         data = json.dumps(req_obj, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
-            ANTHROPIC_API_URL,
-            data=data,
-            headers={
-                "content-type": "application/json",
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-            },
-            method="POST",
+            ANTHROPIC_API_URL, data=data, headers=headers, method="POST"
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             obj = json.loads(resp.read().decode("utf-8", "replace"))
@@ -377,17 +428,19 @@ def ai_summary(body, api_key, timeout=6):
 
 
 def resolve_summary(event, body, config):
-    """เลือกวิธีสรุป: ใช้ AI เฉพาะตอนงานเสร็จ (stop) + มี key + เนื้อหายาวพอ
+    """เลือกวิธีสรุป: ใช้ AI เฉพาะตอนงานเสร็จ (stop) + มี auth + เนื้อหายาวพอ
 
     เหตุการณ์อื่น (ask/plan/notification/error) ใช้ heuristic เร็ว ๆ ไม่หน่วง
     (PreToolUse ยิงก่อน tool ทำงาน จึงไม่อยากให้ช้าเพราะรอ API)
     """
-    api_key = (config or {}).get("anthropic_api_key")
-    use_ai = (config or {}).get("ai_summary", True)
-    if event == "stop" and body and api_key and use_ai and len(body) > 160:
-        s = ai_summary(body, api_key)
-        if s:
-            return s
+    config = config or {}
+    use_ai = config.get("ai_summary", True)
+    if event == "stop" and body and use_ai and len(body) > 160:
+        auth = resolve_auth(config)
+        if auth[1]:
+            s = ai_summary(body, auth)
+            if s:
+                return s
     return short_summary(event, body)
 
 

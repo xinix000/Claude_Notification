@@ -196,5 +196,28 @@ class TestHookInstall(unittest.TestCase):
         self.assertNotIn("PreToolUse", data["hooks"])
 
 
+class TestResolveAuth(unittest.TestCase):
+    def test_oauth_token_wins_over_api_key(self):
+        self.assertEqual(
+            notify.resolve_auth({"oauth_token": "oat-x", "anthropic_api_key": "sk-x"}),
+            ("bearer", "oat-x"),
+        )
+
+    def test_api_key_scheme(self):
+        self.assertEqual(
+            notify.resolve_auth({"anthropic_api_key": "sk-x"}), ("x-api-key", "sk-x")
+        )
+
+    def test_none_when_empty(self):
+        self.assertEqual(notify.resolve_auth({}), (None, ""))
+        self.assertEqual(
+            notify.resolve_auth({"anthropic_api_key": "", "oauth_token": ""}), (None, "")
+        )
+
+    def test_ai_summary_no_token_returns_none(self):
+        # ไม่มี token → คืน None ทันที (ไม่ยิงเน็ต)
+        self.assertIsNone(notify.ai_summary("x" * 300, (None, "")))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
