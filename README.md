@@ -64,7 +64,14 @@ Teams รองรับผ่าน **Workflows** (connector "Incoming Webhook"
 ```powershell
 python notify.py --test   # ทดสอบทุกช่องทางที่ตั้งไว้
 ```
-> ใช้รูปแบบ **Adaptive Card** · บาง org ปิดการสร้าง Workflow — ถ้าสร้างไม่ได้ต้องให้ admin เปิดให้ · Teams ยังไม่รองรับแท็ก @ (ต้องใช้ AAD id เพิ่ม)
+> ใช้รูปแบบ **Adaptive Card** · บาง org ปิดการสร้าง Workflow — ถ้าสร้างไม่ได้ต้องให้ admin เปิดให้
+
+**แท็ก @ เฉพาะคุณ (ไม่รบกวนทั้งทีม):** ใน Teams การโพสต์ลง channel เฉย ๆ **ไม่เด้งเตือนสมาชิก** (นอกจากตั้ง "All activity" เอง) ส่วน **@mention ตรงตัวเด้งเฉพาะคนนั้น** แม้ mute channel ไว้ ตั้งได้ที่:
+- `teams_mention_id` — email/UPN (หรือ AAD object id) ของคุณ
+- `teams_mention_name` — ชื่อที่โชว์ในแท็ก
+- แท็กตอน event ใน `mention_events` เดียวกับ Discord
+- ปิดเสียง channel: ห้อง → **⋯ → Channel notifications → Off** (personal @mention ยังเด้ง)
+> ⚠️ mention ผ่าน Workflow บาง template อาจโชว์เป็นข้อความเฉย ๆ ไม่เด้ง — ถ้าเป็นงั้นต้องแต่ง flow เพิ่ม action **"Get an @mention token for a user"**
 
 ---
 

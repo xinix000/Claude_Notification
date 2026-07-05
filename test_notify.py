@@ -255,6 +255,26 @@ class TestTeamsPayload(unittest.TestCase):
         p = notify.build_teams_payload("error", "พัง", {}, {}, summary="x")
         self.assertEqual(p["attachments"][0]["content"]["body"][0]["color"], "attention")
 
+    def test_mention_added(self):
+        cfg = {"teams_mention_id": "kittana@x.com", "teams_mention_name": "Kittana",
+               "mention_events": ["error"]}
+        card = notify.build_teams_payload("error", "พัง", {}, cfg, summary="x")["attachments"][0]["content"]
+        self.assertIn("msteams", card)
+        ent = card["msteams"]["entities"][0]
+        self.assertEqual(ent["mentioned"]["id"], "kittana@x.com")
+        self.assertTrue(any("<at>Kittana</at>" in b.get("text", "") for b in card["body"]))
+
+    def test_no_mention_when_unset(self):
+        card = notify.build_teams_payload(
+            "error", "พัง", {}, {"mention_events": ["error"]}, summary="x"
+        )["attachments"][0]["content"]
+        self.assertNotIn("msteams", card)
+
+    def test_no_mention_for_unlisted_event(self):
+        cfg = {"teams_mention_id": "k@x.com", "mention_events": ["error"]}
+        card = notify.build_teams_payload("stop", "เสร็จ", {}, cfg, summary="x")["attachments"][0]["content"]
+        self.assertNotIn("msteams", card)
+
     def test_summary_shared_across_channels(self):
         # main คำนวณสรุปครั้งเดียวแล้วส่งเข้าทั้งสอง builder → ต้องใช้ค่าที่ส่งมา
         d = notify.build_payload("stop", "x", {}, {}, summary="ONE")

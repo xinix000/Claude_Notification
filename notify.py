@@ -165,6 +165,9 @@ def load_config():
         # แท็ก @ ตอน event สำคัญ ให้มือถือเด้งชัด (default: error + ตอนรอคุณ)
         "mention_user_id": (cfg.get("mention_user_id") or "").strip(),
         "mention_events": cfg.get("mention_events", ["error", "ask", "plan", "notification"]),
+        # Teams @mention: id = email/UPN หรือ AAD object id, name = ชื่อที่โชว์ในแท็ก
+        "teams_mention_id": (cfg.get("teams_mention_id") or "").strip(),
+        "teams_mention_name": (cfg.get("teams_mention_name") or "").strip(),
     }
 
 
@@ -557,6 +560,19 @@ def build_teams_payload(event, text, payload, config=None, summary=None):
             ]},
         ],
     }
+    # แท็ก @ คนเดียว (Teams) → คนนั้นเด้งเตือนแม้ mute channel ไว้; คนอื่นไม่โดน
+    mention_id = config.get("teams_mention_id")
+    if mention_id and event in config.get("mention_events", []):
+        name = config.get("teams_mention_name") or mention_id
+        tag = f"<at>{name}</at>"
+        # ใส่บรรทัดแท็กไว้ใต้หัวข้อ + ผูก entity ให้ Teams รู้ว่า tag ใคร
+        card["body"].insert(1, {"type": "TextBlock", "text": tag, "wrap": True})
+        card["msteams"] = {"entities": [{
+            "type": "mention",
+            "text": tag,
+            "mentioned": {"id": mention_id, "name": name},
+        }]}
+
     # ห่อแบบ Workflows/Power Automate ("Post to a channel when a webhook request is received")
     return {
         "type": "message",
