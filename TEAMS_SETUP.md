@@ -80,13 +80,14 @@ python notify.py --event error --text "ทดสอบ ตั้งค่าเ�
 | 🔔 ขอสิทธิ์ / รอ | Claude ขอ permission / idle |
 | ⛔ เกิด error | เรียกเอง: `python notify.py --event error --text "..."` |
 
-## (ออปชัน) เอา footer "used a Workflow template" ออก
-การ์ดมีบรรทัดท้าย *"...used a Workflow template. Get template"* เพราะ flow โพสต์ในนามคุณ
-ลองให้โพสต์เป็น **Flow bot** แทน:
-1. เปิด [Power Automate](https://make.powerautomate.com) → เปิด flow → **Edit**
-2. หา action โพสต์การ์ด (เช่น *"Post card in a chat or channel"*)
-3. ช่อง **"Post as"** เปลี่ยนเป็น **Flow bot** → **Save**
-4. ⚠️ **ทดสอบ @mention ซ้ำ** — บาง config พอเป็น Flow bot แล้ว mention ไม่เด้ง ถ้าเจอแบบนั้นเปลี่ยนกลับเป็น **User**
+## เรื่อง footer "used a Workflow template" (cosmetic)
+บรรทัดท้ายการ์ด *"...used a Workflow template. Get template"* มาจากการที่ flow ถูก
+**สร้างจาก template** ของ Microsoft — **ไม่เกี่ยวกับ "Post as"** (ตั้งเป็น Flow bot ยังไงก็ยังขึ้น)
+เป็นแค่ข้อความเทา ๆ ไม่กระทบการใช้งาน
+
+เอาออกได้ทางเดียวคือ **สร้าง flow ใหม่แบบ "Build from scratch"** (trigger *"When a Teams
+webhook request is received"* + action *"Post card in a chat or channel"*) — แต่ **advanced +
+ได้ webhook URL ใหม่ ต้องแจกใหม่ทั้งทีม + เทสต์ mention ใหม่** → ถ้าไม่รบกวนมาก แนะนำ **ปล่อยไว้**
 
 ## แก้ปัญหา
 | อาการ | สาเหตุ / วิธีแก้ |
