@@ -1,11 +1,14 @@
 # Discord Notify สำหรับ Claude Code
 
 แจ้งเตือนเข้า **Discord** อัตโนมัติเมื่อ Claude Code:
-- ✅ ทำงานเสร็จ (hook: `Stop`) — embed สีเขียว
-- 🔔 ต้องการให้คุณตอบ/ยืนยัน (hook: `Notification`) — embed สีเหลือง
-- ⛔ เกิด error (Claude เรียกสคริปต์เองตอนพบข้อผิดพลาด) — embed สีแดง
+- ✅ ทำงานเสร็จ (`Stop`) — สีเขียว
+- ❓ มีคำถามให้ตอบ (`PreToolUse` / AskUserQuestion) — สีส้ม
+- 📋 เสนอแผน รออนุมัติ (`PreToolUse` / ExitPlanMode) — สีม่วง
+- 🔔 ขอสิทธิ์ / รออินพุต (`Notification`) — สีเหลือง
+- ⛔ เกิด error (เรียกสคริปต์เอง) — สีแดง
 
-> แต่ละการแจ้งเตือนเป็น **📝 สรุปสั้น ๆ ภาษาไทยแค่ 1 ย่อหน้า** (≤ 200 ตัว) อ่านปราดเดียวรู้ว่าสรุปเป็นยังไง — ไม่ดั๊มพ์ข้อความเต็มให้รก
+> แต่ละการแจ้งเตือนเป็น **📝 สรุปสั้น ๆ ภาษาไทยแค่ 1 ย่อหน้า** อ่านปราดเดียวรู้เรื่อง — ไม่ดั๊มพ์ข้อความเต็มให้รก
+> ตอนงานเสร็จ ถ้าตั้ง `anthropic_api_key` ไว้ จะให้ **Claude (Haiku) สรุปให้ตรงประเด็นยิ่งขึ้น** (ไม่ตั้งก็ใช้สรุปแบบตัดคำได้)
 
 > เดิมตั้งใจใช้ LINE แต่ LINE Notify ปิดตัวแล้ว (มี.ค. 2025) และ Messaging API ต้องสร้าง Official Account + ยืนยัน SMS จึงเปลี่ยนมาใช้ Discord webhook ที่ตั้งค่าง่ายกว่ามาก
 
@@ -19,13 +22,20 @@
 3. เมนูซ้าย → **Integrations** → **Webhooks** → **New Webhook**
 4. (ตั้งชื่อ/รูปตามใจ เช่น `Claude Code`) → กด **Copy Webhook URL**
 
-### 2) ใส่ URL ลงไฟล์ config
-เปิดไฟล์ [`notify_config.json`](notify_config.json) แล้ววาง URL ที่ copy มา:
+### 2) ใส่ค่าลงไฟล์ config
+เปิดไฟล์ [`notify_config.json`](notify_config.json) วาง URL ที่ copy มา (ดูคีย์ครบที่ [`notify_config.example.json`](notify_config.example.json)):
 ```json
 {
   "webhook_url": "https://discord.com/api/webhooks/xxxx/yyyy"
 }
 ```
+คีย์เสริม (ใส่หรือไม่ก็ได้):
+- `anthropic_api_key` — ใส่ Claude API key เพื่อให้ **Haiku สรุปงานให้** ตอน `Stop`; เว้นว่าง = ใช้สรุปแบบตัดคำ
+- `ai_summary` — `true`/`false` เปิด-ปิดสรุปด้วย AI (ดีฟอลต์ `true` เมื่อมี key)
+- `mention_user_id` — Discord user id ของคุณ เพื่อ **แท็ก @ (มือถือเด้งแรง)** ตอน event สำคัญ
+- `mention_events` — เลือกว่าจะแท็กตอนไหน (ดีฟอลต์ `["error","ask","plan","notification"]`)
+
+> `notify_config.json` ถูก `.gitignore` (มี webhook + key ลับ) — ห้าม commit
 
 ### 3) ทดสอบ
 รันในเทอร์มินัลที่โฟลเดอร์นี้:
@@ -36,7 +46,7 @@ python notify.py --test
 
 ### 4) ติดตั้ง hook (แจ้งเตือนอัตโนมัติ)
 **ดับเบิลคลิก [`setup_hook.bat`](setup_hook.bat)** (หรือรัน `python notify.py --install-hooks`)
-สคริปต์จะเพิ่ม hook `Stop` + `Notification` ลง **user-level settings** (`%USERPROFILE%\.claude\settings.json`)
+สคริปต์จะเพิ่ม hook `Stop` + `Notification` + `PreToolUse` ลง **user-level settings** (`%USERPROFILE%\.claude\settings.json`)
 โดย merge กับ hook เดิมที่มีอยู่ ไม่ทับของเก่า แล้ว **รีสตาร์ต Claude Code** หนึ่งครั้ง
 
 > ถอนออกเมื่อไรก็ได้ด้วย `python notify.py --uninstall-hooks`
@@ -46,12 +56,16 @@ python notify.py --test
 ## การแจ้งเตือนอัตโนมัติ (Hooks)
 ติดตั้งที่ **ระดับ user** (`%USERPROFILE%\.claude\settings.json`) จึงทำงาน **ทุกโปรเจกต์** ไม่ใช่แค่โฟลเดอร์นี้:
 
-| เหตุการณ์ | Hook | Embed |
+| เหตุการณ์ | Hook (matcher) | Embed |
 |-----------|------|-------|
-| Claude ตอบจบ / งานเสร็จ | `Stop` | 🟢 ✅ + 📝 สรุปไทยสั้น ๆ 1 ย่อหน้า |
-| Claude ขอสิทธิ์ / รออินพุต | `Notification` | 🟡 🔔 + 📝 สรุปไทยสั้น ๆ 1 ย่อหน้า |
+| Claude ตอบจบ / งานเสร็จ | `Stop` | 🟢 ✅ + 📝 สรุปไทย (Haiku ถ้ามี key) |
+| Claude ถามคำถาม | `PreToolUse` (`AskUserQuestion`) | 🟠 ❓ + คำถาม |
+| Claude เสนอแผน | `PreToolUse` (`ExitPlanMode`) | 🟣 📋 + แผน |
+| Claude ขอสิทธิ์ / idle | `Notification` | 🟡 🔔 + ข้อความ |
 
-> **สรุปมาจากไหน?** ดึงข้อความล่าสุดของ Claude มาตัด markdown แล้วย่อให้สั้น (≤ 200 ตัว) — ปกติ Claude ตอบเป็นไทยอยู่แล้ว สรุปก็จะเป็นไทย ถ้าบังเอิญเป็นอังกฤษล้วนจะเติมสถานะไทยนำหน้าให้ (เช่น `งานเสร็จแล้ว: ...`)
+> **ทำไมต้อง `PreToolUse`?** hook `Notification` ของ Claude Code **ไม่ยิงตอน AskUserQuestion/ExitPlanMode** (เป็นข้อจำกัดที่รู้กัน — [#59908](https://github.com/anthropics/claude-code/issues/59908)) เลยต้องดักที่ `PreToolUse` แทน; เป็น passive (exit 0) ไม่บล็อกการทำงานของ Claude
+>
+> **สรุปมาจากไหน?** ปกติดึงข้อความล่าสุดของ Claude มาตัด markdown ย่อสั้น (≤ 200 ตัว, ไทยอยู่แล้ว → สรุปเป็นไทย, อังกฤษล้วน → เติมสถานะไทยนำหน้า). ตอน `Stop` ถ้ามี `anthropic_api_key` จะให้ **Claude Haiku สรุปเป็นไทย 1-2 ประโยค** ที่ตรงประเด็นกว่า (~$0.001–0.003/ครั้ง; มี fallback อัตโนมัติถ้า API ล่ม/ช้าเกิน 6 วิ)
 
 > ⚠️ ต้องรีสตาร์ต Claude Code (หรือเปิดเมนู `/hooks` หนึ่งครั้ง) หลังติดตั้ง hook ครั้งแรก เพื่อให้มีผล
 
@@ -70,12 +84,19 @@ python notify.py --event error --text "เกิดปัญหา: build ล้
 ## ไฟล์ในโปรเจกต์
 | ไฟล์ | หน้าที่ |
 |------|---------|
-| `notify.py` | สคริปต์ส่ง Discord + ตัวจัดการ hook + ติดตั้ง/ถอน hook |
-| `setup_hook.bat` | ดับเบิลคลิกเพื่อติดตั้ง hook ระดับ user (เรียก `notify.py --install-hooks`) |
-| `notify_config.json` | เก็บ webhook URL (ถูก `.gitignore` ไว้) |
+| `notify.py` | ส่ง Discord + สรุป (heuristic/AI) + ติดตั้ง/ถอน hook |
+| `setup_hook.bat` | ดับเบิลคลิกติดตั้ง hook ระดับ user |
+| `notify_config.example.json` | ตัวอย่างคีย์ config ทั้งหมด (ไม่มีความลับ) |
+| `notify_config.json` | webhook + API key จริง (ถูก `.gitignore`) |
+| `test_notify.py` | เทสต์ (unittest, ไม่ต้องลง lib เพิ่ม) |
 | `notify.log` | log การส่ง (ไว้ดีบั๊ก) |
 
-> hook ถูกตั้งที่ `%USERPROFILE%\.claude\settings.json` (ระดับ user) — `.claude/settings.json` ในโปรเจกต์นี้ว่างไว้แล้ว
+> hook ถูกตั้งที่ `%USERPROFILE%\.claude\settings.json` (ระดับ user) — `.claude/settings.json` ในโปรเจกต์นี้ว่างไว้
+
+## เทสต์
+```powershell
+python -m unittest test_notify -v
+```
 
 ## แก้ปัญหา
 - **ไม่มีข้อความเข้า Discord** → เช็ก `notify.log`, ตรวจว่า webhook URL ถูกต้องและห้องยังอยู่

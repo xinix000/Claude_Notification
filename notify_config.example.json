@@ -1,0 +1,9 @@
+{
+  "webhook_url": "https://discord.com/api/webhooks/xxxx/yyyy",
+
+  "anthropic_api_key": "",
+  "ai_summary": true,
+
+  "mention_user_id": "",
+  "mention_events": ["error", "ask", "plan", "notification"]
+}

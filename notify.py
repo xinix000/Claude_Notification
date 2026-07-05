@@ -43,6 +43,8 @@ COLORS = {
     "notification": 0xF1C40F,  # เหลือง = รอคุณตอบ
     "error": 0xE74C3C,         # แดง = error
     "test": 0x3498DB,          # ฟ้า = ทดสอบ
+    "ask": 0xF39C12,           # ส้ม = มีคำถาม
+    "plan": 0x9B59B6,          # ม่วง = เสนอแผน
     "manual": 0x95A5A6,        # เทา = อื่น ๆ
 }
 TITLES = {
@@ -50,6 +52,8 @@ TITLES = {
     "notification": "🔔 Claude ต้องการให้คุณตอบ/ยืนยัน",
     "error": "⛔ เกิด error",
     "test": "🧪 ทดสอบการเชื่อมต่อ Discord สำเร็จ",
+    "ask": "❓ Claude มีคำถามให้คุณตอบ",
+    "plan": "📋 Claude เสนอแผน รออนุมัติ",
     "manual": "🔔 Claude แจ้งเตือน",
 }
 # สถานะภาษาไทยสั้น ๆ ใช้เป็น fallback ของ "สรุป" เมื่อไม่มีเนื้อหา
@@ -59,6 +63,8 @@ STATUS_TH = {
     "notification": "รอคุณตอบ/ยืนยัน",
     "error": "เกิดข้อผิดพลาด",
     "test": "ทดสอบสำเร็จ",
+    "ask": "มีคำถามรอคุณตอบ",
+    "plan": "รออนุมัติแผน",
     "manual": "แจ้งเตือน",
 }
 
@@ -123,16 +129,30 @@ def log(msg):
 
 
 def load_config():
-    url = ""
+    """อ่านค่าตั้งจาก notify_config.json (+ env override) คืนเป็น dict"""
+    cfg = {}
     if CONFIG_PATH.exists():
         try:
-            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            url = (data.get("webhook_url") or "").strip()
+            cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         except Exception as e:
             log(f"อ่าน config ไม่ได้: {e}")
+
+    webhook = (cfg.get("webhook_url") or "").strip()
     # environment variable มีสิทธิ์เหนือกว่าไฟล์ config
-    url = os.environ.get("DISCORD_WEBHOOK_URL", url).strip()
-    return url
+    webhook = os.environ.get("DISCORD_WEBHOOK_URL", webhook).strip()
+
+    api_key = (cfg.get("anthropic_api_key") or "").strip()
+    api_key = os.environ.get("ANTHROPIC_API_KEY", api_key).strip()
+
+    return {
+        "webhook_url": webhook,
+        "anthropic_api_key": api_key,
+        # สรุปด้วย AI เมื่อมี key (ปิดได้ด้วย "ai_summary": false)
+        "ai_summary": bool(cfg.get("ai_summary", True)),
+        # แท็ก @ ตอน event สำคัญ ให้มือถือเด้งชัด (default: error + ตอนรอคุณ)
+        "mention_user_id": (cfg.get("mention_user_id") or "").strip(),
+        "mention_events": cfg.get("mention_events", ["error", "ask", "plan", "notification"]),
+    }
 
 
 def user_settings_path():
@@ -149,38 +169,50 @@ def _load_settings(path):
     return {}
 
 
-def install_hooks():
-    """ติดตั้ง Stop + Notification hook ลง user-level settings.json
+# hook events ที่สคริปต์นี้ดูแล (ใช้ทั้งตอน install / uninstall)
+HOOK_EVENTS = ("Stop", "Notification", "PreToolUse")
 
-    merge กับของเดิม (เช่น hook อื่น / ค่า theme) ไม่เขียนทับทั้งไฟล์
-    และอ้าง path ของ notify.py ตามเครื่องปัจจุบัน จึงย้ายไปเครื่องอื่นได้
+
+def install_hooks(path=None):
+    """ติดตั้ง hook ลง user-level settings.json (merge ไม่ทับของเดิม)
+
+    - Stop         → งานเสร็จ
+    - Notification → ขอสิทธิ์ / รอ idle
+    - PreToolUse (AskUserQuestion|ExitPlanMode) → ตอน Claude ถาม/เสนอแผน
+      (สำคัญ: Notification hook ของ Claude Code ไม่ยิงให้ AskUserQuestion
+       จึงต้องดักที่ PreToolUse แทน — passive ไม่บล็อก tool)
+    อ้าง path ของ notify.py ตามเครื่องปัจจุบัน จึงย้ายไปเครื่องอื่นได้
     """
-    path = user_settings_path()
+    path = path or user_settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     data = _load_settings(path)
 
     script = str(HERE / "notify.py")
     hooks = data.setdefault("hooks", {})
+    # (event_name, matcher, event_arg, statusMessage)
     specs = [
-        ("Stop", "stop", "แจ้งเตือน Discord (งานเสร็จ)"),
-        ("Notification", "notification", "แจ้งเตือน Discord (รอคุณตอบ)"),
+        ("Stop", None, "stop", "แจ้งเตือน Discord (งานเสร็จ)"),
+        ("Notification", None, "notification", "แจ้งเตือน Discord (ขอสิทธิ์/รอ)"),
+        ("PreToolUse", "AskUserQuestion|ExitPlanMode", None,
+         "แจ้งเตือน Discord (มีคำถาม/แผน)"),
     ]
-    for event_name, arg, status_msg in specs:
-        entry = {
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": "python",
-                    "args": [script, "--event", arg],
-                    "timeout": 20,
-                    "statusMessage": status_msg,
-                }
-            ]
+    for event_name, matcher, arg, status_msg in specs:
+        cmd = {
+            "type": "command",
+            "command": "python",
+            # ไม่ใส่ --event → ให้ derive จาก payload (PreToolUse รวม 2 tool)
+            "args": [script] if arg is None else [script, "--event", arg],
+            "timeout": 30,
+            "statusMessage": status_msg,
         }
+        entry = {"hooks": [cmd]}
+        if matcher:
+            entry["matcher"] = matcher
+
         lst = hooks.get(event_name)
         if not isinstance(lst, list):
             lst = []
-        # เอา hook เดิมที่อ้างถึง notify.py ออกก่อน (กันซ้ำ / อัปเดต path ให้เป็นของเครื่องนี้)
+        # เอา hook เดิมที่อ้างถึง notify.py ออกก่อน (กันซ้ำ / อัปเดต path+timeout)
         lst = [h for h in lst if "notify.py" not in json.dumps(h, ensure_ascii=False)]
         lst.append(entry)
         hooks[event_name] = lst
@@ -189,12 +221,12 @@ def install_hooks():
     return path
 
 
-def uninstall_hooks():
+def uninstall_hooks(path=None):
     """ถอนเฉพาะ hook ที่อ้างถึง notify.py ออกจาก user-level settings.json"""
-    path = user_settings_path()
+    path = path or user_settings_path()
     data = _load_settings(path)
     hooks = data.get("hooks", {})
-    for event_name in ("Stop", "Notification"):
+    for event_name in HOOK_EVENTS:
         lst = hooks.get(event_name)
         if isinstance(lst, list):
             lst = [h for h in lst if "notify.py" not in json.dumps(h, ensure_ascii=False)]
@@ -278,6 +310,17 @@ def resolve_body(event, text, payload):
         return text
     if event == "stop":
         return transcript_preview(payload)
+    if event == "ask":  # PreToolUse ของ AskUserQuestion → ดึงคำถามมาโชว์
+        ti = payload.get("tool_input") or {}
+        qs = ti.get("questions")
+        if isinstance(qs, list) and qs:
+            return "\n".join(
+                q.get("question", "") for q in qs if isinstance(q, dict)
+            ).strip()
+        return ti.get("question") or payload.get("message", "")
+    if event == "plan":  # PreToolUse ของ ExitPlanMode → ดึงแผน
+        ti = payload.get("tool_input") or {}
+        return ti.get("plan") or payload.get("message", "")
     if event in ("notification", "error"):
         return payload.get("message", "")
     if event == "test":
@@ -285,11 +328,75 @@ def resolve_body(event, text, payload):
     return ""
 
 
-def build_payload(event, text, payload):
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+# Haiku: ถูก+เร็ว เหมาะกับสรุปสั้น (hook มี timeout จำกัด)
+SUMMARY_MODEL = "claude-haiku-4-5"
+
+
+def ai_summary(body, api_key, timeout=6):
+    """เรียก Claude (Haiku) สรุปเป็นไทย 1-2 ประโยค — คืน None ถ้าพลาด (ให้ fallback)
+
+    ใช้ urllib ล้วน ไม่พึ่ง SDK เพื่อคงสภาพ zero-dependency ของโปรเจกต์
+    """
+    system = (
+        "คุณคือผู้ช่วยสรุปงานของ Claude Code ให้ผู้ใช้ชาวไทย "
+        "สรุปข้อความต่อไปนี้เป็นภาษาไทยสั้น ๆ ไม่เกิน 1-2 ประโยค (ราว 120 ตัวอักษร) "
+        "เน้นใจความว่าทำอะไรเสร็จหรือติดปัญหาอะไร "
+        "ตอบเฉพาะบทสรุปล้วน ๆ ห้ามมีคำนำ ห้ามใช้ markdown"
+    )
+    req_obj = {
+        "model": SUMMARY_MODEL,
+        "max_tokens": 200,
+        "system": system,
+        "messages": [{"role": "user", "content": body[:4000]}],
+    }
+    try:
+        data = json.dumps(req_obj, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            ANTHROPIC_API_URL,
+            data=data,
+            headers={
+                "content-type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            obj = json.loads(resp.read().decode("utf-8", "replace"))
+        parts = [
+            b.get("text", "")
+            for b in obj.get("content", [])
+            if isinstance(b, dict) and b.get("type") == "text"
+        ]
+        summary = " ".join(parts).strip()
+        return summary or None
+    except Exception as e:
+        log(f"ai_summary ล้มเหลว: {e}")
+        return None
+
+
+def resolve_summary(event, body, config):
+    """เลือกวิธีสรุป: ใช้ AI เฉพาะตอนงานเสร็จ (stop) + มี key + เนื้อหายาวพอ
+
+    เหตุการณ์อื่น (ask/plan/notification/error) ใช้ heuristic เร็ว ๆ ไม่หน่วง
+    (PreToolUse ยิงก่อน tool ทำงาน จึงไม่อยากให้ช้าเพราะรอ API)
+    """
+    api_key = (config or {}).get("anthropic_api_key")
+    use_ai = (config or {}).get("ai_summary", True)
+    if event == "stop" and body and api_key and use_ai and len(body) > 160:
+        s = ai_summary(body, api_key)
+        if s:
+            return s
+    return short_summary(event, body)
+
+
+def build_payload(event, text, payload, config=None):
+    config = config or {}
     proj = project_name(payload)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     body = resolve_body(event, text, payload)
-    summary = short_summary(event, body)  # สรุปสั้น ๆ ภาษาไทย 1 ย่อหน้า ว่าสรุปเป็นยังไง
+    summary = resolve_summary(event, body, config)  # สรุปสั้น ๆ ภาษาไทย
 
     # เอาแค่สรุปสั้น 1 ย่อหน้า ไม่ดั๊มพ์ข้อความเต็ม (เยอะเกินไป อ่านยากบนมือถือ)
     embed = {
@@ -301,7 +408,14 @@ def build_payload(event, text, payload):
             {"name": "🕒 เวลา", "value": ts, "inline": True},
         ],
     }
-    return {"username": "Claude Code", "embeds": [embed]}
+    data = {"username": "Claude Code", "embeds": [embed]}
+
+    # แท็ก @ เฉพาะ event สำคัญ ให้มือถือเด้งแรง (ต้องตั้ง mention_user_id ก่อน)
+    mention_id = config.get("mention_user_id")
+    if mention_id and event in config.get("mention_events", []):
+        data["content"] = f"<@{mention_id}> {TITLES.get(event, TITLES['manual'])}"
+        data["allowed_mentions"] = {"parse": ["users"]}
+    return data
 
 
 def send(webhook_url, data_obj):
@@ -341,7 +455,8 @@ def main():
         print("✅ ติดตั้ง hook ระดับ user (ใช้ได้ทุกโปรเจกต์) เรียบร้อย")
         print(f"   ไฟล์: {path}")
         print("   • Stop         → แจ้งเตือนตอน Claude ทำงานเสร็จ")
-        print("   • Notification → แจ้งเตือนตอน Claude รอคุณตอบ/ยืนยัน")
+        print("   • Notification → แจ้งเตือนตอน Claude ขอสิทธิ์/รอ")
+        print("   • PreToolUse   → แจ้งเตือนตอน Claude ถามคำถาม/เสนอแผน")
         print()
         print("⚠️  รีสตาร์ต Claude Code (หรือเปิดเมนู /hooks หนึ่งครั้ง) เพื่อให้ hook มีผล")
         return 0
@@ -361,6 +476,10 @@ def main():
     event = (args.event or payload.get("hook_event_name") or "").lower()
     if event == "subagentstop":
         event = "stop"
+    if event == "pretooluse":
+        # Notification hook ไม่ยิงให้ AskUserQuestion — เราดักที่ PreToolUse แทน
+        tool = (payload.get("tool_name") or "").lower()
+        event = {"askuserquestion": "ask", "exitplanmode": "plan"}.get(tool, "notification")
     if args.test:
         event = "test"
     if not event:
@@ -370,7 +489,8 @@ def main():
     if text is None and args.positional:
         text = " ".join(args.positional)
 
-    webhook_url = load_config()
+    config = load_config()
+    webhook_url = config["webhook_url"]
     not_configured = (
         not webhook_url
         or webhook_url.startswith("<")
@@ -386,7 +506,7 @@ def main():
         )
         return 2
 
-    data_obj = build_payload(event, text, payload)
+    data_obj = build_payload(event, text, payload, config)
     try:
         status, body = send(webhook_url, data_obj)
         log(f"ส่งสำเร็จ event={event} status={status}")
