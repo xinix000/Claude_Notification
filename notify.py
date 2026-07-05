@@ -248,11 +248,18 @@ def uninstall_hooks(path=None):
 
 
 def read_stdin_json():
-    """อ่าน JSON payload ที่ Claude Code ส่งมาทาง stdin (ถ้ามี)"""
+    """อ่าน JSON payload ที่ Claude Code ส่งมาทาง stdin (ถ้ามี)
+
+    อ่านเป็น bytes แล้ว decode UTF-8 เอง — กัน codec ของ Windows (cp874 ฯลฯ)
+    ทำ payload ภาษาไทยเพี้ยนเป็น surrogate จนตอน encode ส่งเข้า Discord ไม่ได้
+    """
     try:
         if sys.stdin is None or sys.stdin.isatty():
             return {}
-        raw = sys.stdin.read()
+        buf = getattr(sys.stdin, "buffer", None)
+        raw = buf.read() if buf is not None else sys.stdin.read()
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", "replace")
         if not raw or not raw.strip():
             return {}
         return json.loads(raw)

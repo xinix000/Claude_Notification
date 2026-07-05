@@ -5,6 +5,7 @@
 PreToolUse, การแท็ก @ (mention), และ logic merge/idempotent ของ install/uninstall hook.
 เทสต์ไม่แตะเน็ต (mock ai_summary) และเขียน settings ลง temp dir เท่านั้น.
 """
+import io
 import json
 import sys
 import tempfile
@@ -238,6 +239,32 @@ class TestClaudeCodeToken(unittest.TestCase):
             )
         finally:
             notify._claude_code_token = orig
+
+
+class TestReadStdin(unittest.TestCase):
+    """กัน regression: payload ภาษาไทยจาก stdin ต้อง decode UTF-8 ถูก
+    (เคยพัง — codec Windows ทำเป็น surrogate จน encode ส่ง Discord ไม่ได้)"""
+
+    class _FakeStdin:
+        def __init__(self, data_bytes):
+            self.buffer = io.BytesIO(data_bytes)
+
+        def isatty(self):
+            return False
+
+    def test_thai_payload_decodes(self):
+        payload = {"hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion",
+                   "tool_input": {"questions": [{"question": "จะ deploy ไหม?"}]}}
+        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        orig = sys.stdin
+        sys.stdin = self._FakeStdin(raw)
+        try:
+            got = notify.read_stdin_json()
+        finally:
+            sys.stdin = orig
+        self.assertEqual(got["tool_input"]["questions"][0]["question"], "จะ deploy ไหม?")
+        # สำคัญ: ต้อง encode UTF-8 กลับได้ (ไม่มี lone surrogate)
+        json.dumps(got, ensure_ascii=False).encode("utf-8")
 
 
 if __name__ == "__main__":
