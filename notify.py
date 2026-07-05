@@ -164,7 +164,7 @@ def load_config():
         "ai_summary": bool(cfg.get("ai_summary", True)),
         # แท็ก @ ตอน event สำคัญ ให้มือถือเด้งชัด (default: error + ตอนรอคุณ)
         "mention_user_id": (cfg.get("mention_user_id") or "").strip(),
-        "mention_events": cfg.get("mention_events", ["error", "ask", "plan", "notification"]),
+        "mention_events": cfg.get("mention_events", ["stop", "error", "ask", "plan", "notification"]),
         # Teams @mention: id = email/UPN หรือ AAD object id, name = ชื่อที่โชว์ในแท็ก
         "teams_mention_id": (cfg.get("teams_mention_id") or "").strip(),
         "teams_mention_name": (cfg.get("teams_mention_name") or "").strip(),

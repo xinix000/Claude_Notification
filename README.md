@@ -39,7 +39,7 @@
   - `oauth_from_ant: true` — ขอ token สดจาก `ant auth print-credentials` (auto-refresh, OAuth ถูกวิธี) · ต้องลง [`ant` CLI](https://platform.claude.com/docs/en/api/sdks/cli) + `ant auth login` ก่อน
 - `ai_summary` — `true`/`false` เปิด-ปิดสรุปด้วย AI (ดีฟอลต์ `true` เมื่อมี key/token)
 - `mention_user_id` — Discord user id ของคุณ เพื่อ **แท็ก @ (มือถือเด้งแรง)** ตอน event สำคัญ
-- `mention_events` — เลือกว่าจะแท็กตอนไหน (ดีฟอลต์ `["error","ask","plan","notification"]`)
+- `mention_events` — เลือกว่าจะแท็กตอนไหน (ดีฟอลต์ `["stop","error","ask","plan","notification"]` = ทุก event) · หมายเหตุ: `stop` ยิงทุกครั้งที่ Claude ตอบจบ ตอนนั่งทำงานอยู่จะ ping ทุกเทิร์น — ถ้ารำคาญเอา `stop` ออกได้ (แต่ใน Teams ที่ตั้ง channel = Off ต้องมี `stop` ไม่งั้นงานเสร็จแล้วเงียบ)
 - `teams_webhook_url` — ส่งเข้า **Microsoft Teams** ด้วย (ตั้งพร้อม Discord หรือใช้อย่างเดียวก็ได้) → วิธีเอา URL ดู [ส่งเข้า Microsoft Teams](#5-ออปชัน-ส่งเข้า-microsoft-teams)
 
 > `notify_config.json` ถูก `.gitignore` (มี webhook + key ลับ) — ห้าม commit
