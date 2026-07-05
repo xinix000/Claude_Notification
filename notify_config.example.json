@@ -12,5 +12,7 @@
   "mention_events": ["stop", "error", "ask", "plan", "notification"],
 
   "teams_mention_id": "",
-  "teams_mention_name": ""
+  "teams_mention_name": "",
+
+  "sender_name": ""
 }

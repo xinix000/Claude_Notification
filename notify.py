@@ -22,6 +22,7 @@ import re
 import json
 import argparse
 import subprocess
+import time
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -168,6 +169,8 @@ def load_config():
         # Teams @mention: id = email/UPN หรือ AAD object id, name = ชื่อที่โชว์ในแท็ก
         "teams_mention_id": (cfg.get("teams_mention_id") or "").strip(),
         "teams_mention_name": (cfg.get("teams_mention_name") or "").strip(),
+        # ชื่อผู้ส่ง โชว์ช่อง "From" (ห้องรวมหลายคนจะได้รู้ว่าอันไหนของใคร)
+        "sender_name": (cfg.get("sender_name") or "").strip(),
     }
 
 
@@ -510,15 +513,20 @@ def build_payload(event, text, payload, config=None, summary=None):
     if summary is None:  # main คำนวณครั้งเดียวแล้วส่งมา (กัน AI ยิงซ้ำหลายช่องทาง)
         summary = resolve_summary(event, resolve_body(event, text, payload), config)
 
+    fields = [
+        {"name": "📁 Project", "value": proj, "inline": True},
+        {"name": "🕒 เวลา", "value": ts, "inline": True},
+    ]
+    sender = config.get("sender_name")
+    if sender:  # ห้องรวมหลายคน: บอกว่าอันนี้ของใคร
+        fields.append({"name": "👤 From", "value": sender, "inline": True})
+
     # เอาแค่สรุปสั้น 1 ย่อหน้า ไม่ดั๊มพ์ข้อความเต็ม (เยอะเกินไป อ่านยากบนมือถือ)
     embed = {
         "title": TITLES.get(event, TITLES["manual"]),
         "color": COLORS.get(event, COLORS["manual"]),
         "description": f"📝 **สรุป:** {summary}",
-        "fields": [
-            {"name": "📁 Project", "value": proj, "inline": True},
-            {"name": "🕒 เวลา", "value": ts, "inline": True},
-        ],
+        "fields": fields,
     }
     data = {"username": "Claude Code", "embeds": [embed]}
 
@@ -545,19 +553,27 @@ def build_teams_payload(event, text, payload, config=None, summary=None):
     if summary is None:
         summary = resolve_summary(event, resolve_body(event, text, payload), config)
 
+    facts = [
+        {"title": "📁 Project", "value": proj},
+        {"title": "🕒 เวลา", "value": ts},
+    ]
+    sender = config.get("sender_name")
+    if sender:  # ห้องรวมหลายคน: บอกว่าอันนี้ของใคร
+        facts.append({"title": "👤 From", "value": sender})
+
     card = {
         "type": "AdaptiveCard",
         "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
         "version": "1.4",
         "body": [
-            {"type": "TextBlock", "text": TITLES.get(event, TITLES["manual"]),
-             "weight": "Bolder", "size": "Medium", "wrap": True,
-             "color": TEAMS_COLORS.get(event, "default")},
-            {"type": "TextBlock", "text": f"📝 **สรุป:** {summary}", "wrap": True},
-            {"type": "FactSet", "facts": [
-                {"title": "📁 Project", "value": proj},
-                {"title": "🕒 เวลา", "value": ts},
+            # แถบหัวมีพื้นหลังสีตามสถานะ (bleed = ขยายเต็มขอบการ์ด) เห็นสถานะปราดเดียว
+            {"type": "Container", "style": TEAMS_COLORS.get(event, "default"),
+             "bleed": True, "items": [
+                {"type": "TextBlock", "text": TITLES.get(event, TITLES["manual"]),
+                 "weight": "Bolder", "size": "Medium", "wrap": True},
             ]},
+            {"type": "TextBlock", "text": f"📝 **สรุป:** {summary}", "wrap": True},
+            {"type": "FactSet", "facts": facts},
         ],
     }
     # แท็ก @ คนเดียว (Teams) → คนนั้นเด้งเตือนแม้ mute channel ไว้; คนอื่นไม่โดน
@@ -583,20 +599,44 @@ def build_teams_payload(event, text, payload, config=None, summary=None):
     }
 
 
-def send(webhook_url, data_obj):
+def _retry_after(err):
+    """อ่านวินาทีที่ควรรอจาก header Retry-After (ถ้ามี)"""
+    try:
+        ra = err.headers.get("Retry-After") if getattr(err, "headers", None) else None
+        return float(ra) if ra else 0.0
+    except Exception:
+        return 0.0
+
+
+def send(webhook_url, data_obj, retries=2):
+    """POST เข้า webhook + retry ตอนเจอ 429/5xx/เน็ตสะดุด
+
+    backoff แบบ exponential และเคารพ header Retry-After; 4xx อื่นโยน error เลย
+    (ช่วยกันแจ้งเตือนหายเวลา Discord/Power Automate rate-limit หรือเน็ตกระตุก)
+    """
     data = json.dumps(data_obj, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        webhook_url,
-        data=data,
-        headers={
-            "Content-Type": "application/json",
-            # Discord/Cloudflare บล็อก UA เริ่มต้นของ Python (error 1010) จึงต้องตั้งเอง
-            "User-Agent": "ClaudeCodeNotifier/1.0 (+https://claude.com/claude-code)",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return resp.status, resp.read().decode("utf-8", "replace")
+    headers = {
+        "Content-Type": "application/json",
+        # Discord/Cloudflare บล็อก UA เริ่มต้นของ Python (error 1010) จึงต้องตั้งเอง
+        "User-Agent": "ClaudeCodeNotifier/1.0 (+https://claude.com/claude-code)",
+    }
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(webhook_url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return resp.status, resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            if attempt >= retries or not (e.code == 429 or e.code >= 500):
+                raise  # หมด retry หรือเป็น 4xx อื่น (URL ผิด/ถูกลบ) → โยนเลย
+            wait = _retry_after(e) or (2 ** attempt)
+            log(f"retry {attempt + 1}/{retries} หลัง HTTP {e.code} (รอ ~{min(wait, 8):.0f}s)")
+            time.sleep(min(wait, 8))
+        except urllib.error.URLError as e:
+            if attempt >= retries:
+                raise
+            log(f"retry {attempt + 1}/{retries} หลังเน็ตสะดุด: {e}")
+            time.sleep(2 ** attempt)
+    raise RuntimeError("send: หมด retry ผิดปกติ")  # กันไว้ (ปกติ return/raise ในลูปแล้ว)
 
 
 def main():

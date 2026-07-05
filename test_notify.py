@@ -10,6 +10,7 @@ import json
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -252,8 +253,10 @@ class TestTeamsPayload(unittest.TestCase):
         self.assertIn("📁 Project", [f["title"] for f in facts])
 
     def test_color_maps_event(self):
-        p = notify.build_teams_payload("error", "พัง", {}, {}, summary="x")
-        self.assertEqual(p["attachments"][0]["content"]["body"][0]["color"], "attention")
+        # หัวข้ออยู่ใน Container ที่มี style สีตาม event (แถบหัวสี)
+        card = notify.build_teams_payload("error", "พัง", {}, {}, summary="x")["attachments"][0]["content"]
+        self.assertEqual(card["body"][0]["type"], "Container")
+        self.assertEqual(card["body"][0]["style"], "attention")
 
     def test_mention_added(self):
         cfg = {"teams_mention_id": "kittana@x.com", "teams_mention_name": "Kittana",
@@ -307,6 +310,83 @@ class TestReadStdin(unittest.TestCase):
         self.assertEqual(got["tool_input"]["questions"][0]["question"], "จะ deploy ไหม?")
         # สำคัญ: ต้อง encode UTF-8 กลับได้ (ไม่มี lone surrogate)
         json.dumps(got, ensure_ascii=False).encode("utf-8")
+
+
+class TestSenderName(unittest.TestCase):
+    def test_discord_from_field(self):
+        p = notify.build_payload("stop", "x", {}, {"sender_name": "Kittana"}, summary="s")
+        self.assertIn("👤 From", [f["name"] for f in p["embeds"][0]["fields"]])
+
+    def test_teams_from_fact(self):
+        card = notify.build_teams_payload(
+            "stop", "x", {}, {"sender_name": "Kittana"}, summary="s"
+        )["attachments"][0]["content"]
+        facts = [b for b in card["body"] if b.get("type") == "FactSet"][0]["facts"]
+        self.assertIn("👤 From", [f["title"] for f in facts])
+
+    def test_no_from_when_unset(self):
+        p = notify.build_payload("stop", "x", {}, {}, summary="s")
+        self.assertNotIn("👤 From", [f["name"] for f in p["embeds"][0]["fields"]])
+
+
+class _FakeResp:
+    status = 204
+
+    def read(self):
+        return b""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class TestSendRetry(unittest.TestCase):
+    def _run(self, fake_urlopen):
+        calls = []
+
+        def wrapped(req, timeout=None):
+            calls.append(1)
+            return fake_urlopen(req, len(calls))
+
+        orig_open = notify.urllib.request.urlopen
+        orig_sleep = notify.time.sleep
+        notify.urllib.request.urlopen = wrapped
+        notify.time.sleep = lambda s: None
+        try:
+            return calls, notify.send("https://x", {"a": 1})
+        finally:
+            notify.urllib.request.urlopen = orig_open
+            notify.time.sleep = orig_sleep
+
+    def test_retries_on_429_then_succeeds(self):
+        def fake(req, n):
+            if n == 1:
+                raise urllib.error.HTTPError(
+                    req.full_url, 429, "rate", {"Retry-After": "0"}, io.BytesIO(b"")
+                )
+            return _FakeResp()
+
+        calls, (status, _) = self._run(fake)
+        self.assertEqual(status, 204)
+        self.assertEqual(len(calls), 2)  # พลาด 1 ครั้ง + สำเร็จ
+
+    def test_no_retry_on_400(self):
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(1)
+            raise urllib.error.HTTPError(req.full_url, 400, "bad", {}, io.BytesIO(b"nope"))
+
+        orig = notify.urllib.request.urlopen
+        notify.urllib.request.urlopen = fake_urlopen
+        try:
+            with self.assertRaises(urllib.error.HTTPError):
+                notify.send("https://x", {"a": 1})
+        finally:
+            notify.urllib.request.urlopen = orig
+        self.assertEqual(len(calls), 1)  # 4xx ไม่ retry
 
 
 if __name__ == "__main__":
