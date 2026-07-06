@@ -248,7 +248,8 @@ class TestTeamsPayload(unittest.TestCase):
         self.assertEqual(p["type"], "message")
         card = p["attachments"][0]["content"]
         self.assertEqual(card["type"], "AdaptiveCard")
-        self.assertTrue(any("สรุป" in b.get("text", "") for b in card["body"]))
+        # มีบล็อกสรุป (📝) — ป้ายจะไทย/อังกฤษแล้วแต่ภาษา จึงเช็กแบบไม่ผูกภาษา
+        self.assertTrue(any("📝" in b.get("text", "") for b in card["body"]))
         facts = [b for b in card["body"] if b.get("type") == "FactSet"][0]["facts"]
         self.assertIn("📁 Project", [f["title"] for f in facts])
 
@@ -284,6 +285,97 @@ class TestTeamsPayload(unittest.TestCase):
         t = notify.build_teams_payload("stop", "x", {}, {}, summary="ONE")
         self.assertIn("ONE", d["embeds"][0]["description"])
         self.assertTrue(any("ONE" in b.get("text", "") for b in t["attachments"][0]["content"]["body"]))
+
+
+class TestNormLang(unittest.TestCase):
+    def test_english_variants(self):
+        for v in ("en", "EN", "English", " english ", "eng"):
+            self.assertEqual(notify._norm_lang(v), "en")
+
+    def test_thai_variants(self):
+        for v in ("th", "TH", "Thai", "thai", ""):
+            self.assertEqual(notify._norm_lang(v), "th")
+
+    def test_unknown_uses_default(self):
+        self.assertEqual(notify._norm_lang("fr"), "th")
+        self.assertEqual(notify._norm_lang(None, "en"), "en")
+
+
+class TestSummaryLanguage(unittest.TestCase):
+    def test_short_summary_english_status(self):
+        self.assertEqual(notify.short_summary("stop", "", lang="en"), "Task finished")
+        self.assertEqual(notify.short_summary("error", "", lang="en"), "An error occurred")
+
+    def test_short_summary_english_no_thai_prefix(self):
+        # โหมด en: ไม่เติมสถานะไทยนำหน้า คืน gist ตามจริง
+        s = notify.short_summary("stop", "Fixed the login bug", lang="en")
+        self.assertEqual(s, "Fixed the login bug")
+        self.assertFalse(notify._has_thai(s))
+
+    def test_resolve_summary_english_heuristic(self):
+        s = notify.resolve_summary("stop", "Refactored the parser " * 20,
+                                   {"anthropic_api_key": ""}, lang="en")
+        self.assertFalse(notify._has_thai(s))
+        self.assertIn("Refactored", s)
+
+    def test_resolve_summary_passes_lang_to_ai(self):
+        seen = {}
+        orig = notify.ai_summary
+        notify.ai_summary = lambda body, auth, **k: (seen.update(k), "EN summary")[1]
+        try:
+            s = notify.resolve_summary("stop", "z" * 300,
+                                       {"anthropic_api_key": "sk-x"}, lang="en")
+            self.assertEqual(s, "EN summary")
+            self.assertEqual(seen.get("lang"), "en")
+        finally:
+            notify.ai_summary = orig
+
+
+class TestTeamsLanguage(unittest.TestCase):
+    def _card(self, **kw):
+        return notify.build_teams_payload(
+            "stop", "x", {"cwd": r"C:\proj\App"}, summary="S", **kw
+        )["attachments"][0]["content"]
+
+    def test_english_card_chrome(self):
+        card = self._card(lang="en")
+        # หัวข้อเป็นอังกฤษ
+        title = card["body"][0]["items"][0]["text"]
+        self.assertIn("finished", title)
+        self.assertFalse(notify._has_thai(title))
+        # ป้ายสรุป + ฟิลด์เป็นอังกฤษ
+        self.assertTrue(any("**Summary:**" in b.get("text", "") for b in card["body"]))
+        facts = [b for b in card["body"] if b.get("type") == "FactSet"][0]["facts"]
+        titles = [f["title"] for f in facts]
+        self.assertIn("🕒 Time", titles)
+        self.assertIn("📁 Project", titles)
+
+    def test_default_is_english(self):
+        card = self._card()  # ไม่ระบุ lang → อังกฤษ (ดีฟอลต์)
+        self.assertTrue(any("**Summary:**" in b.get("text", "") for b in card["body"]))
+        facts = [b for b in card["body"] if b.get("type") == "FactSet"][0]["facts"]
+        self.assertIn("🕒 Time", [f["title"] for f in facts])
+
+    def test_thai_when_explicit(self):
+        card = self._card(lang="th")
+        self.assertTrue(any("สรุป" in b.get("text", "") for b in card["body"]))
+        facts = [b for b in card["body"] if b.get("type") == "FactSet"][0]["facts"]
+        self.assertIn("🕒 เวลา", [f["title"] for f in facts])
+
+    def test_lang_read_from_config(self):
+        card = notify.build_teams_payload(
+            "stop", "x", {}, {"teams_language": "th"}, summary="S"
+        )["attachments"][0]["content"]
+        self.assertTrue(any("สรุป" in b.get("text", "") for b in card["body"]))
+
+    def test_mention_still_works_in_english(self):
+        cfg = {"teams_mention_id": "k@x.com", "teams_mention_name": "Kittana",
+               "mention_events": ["stop"]}
+        card = notify.build_teams_payload(
+            "stop", "x", {}, cfg, summary="S", lang="en"
+        )["attachments"][0]["content"]
+        self.assertIn("msteams", card)
+        self.assertTrue(any("<at>Kittana</at>" in b.get("text", "") for b in card["body"]))
 
 
 class TestReadStdin(unittest.TestCase):

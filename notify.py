@@ -70,6 +70,51 @@ STATUS_TH = {
     "manual": "แจ้งเตือน",
 }
 
+# ---- ภาษาอังกฤษ (ใช้เมื่อ config teams_language = "en") ----
+TITLES_EN = {
+    "stop": "✅ Claude finished the task",
+    "notification": "🔔 Claude needs your input",
+    "error": "⛔ An error occurred",
+    "test": "🧪 Connection test succeeded",
+    "ask": "❓ Claude has a question for you",
+    "plan": "📋 Claude proposed a plan — awaiting approval",
+    "manual": "🔔 Claude notification",
+}
+STATUS_EN = {
+    "stop": "Task finished",
+    "notification": "Awaiting your input",
+    "error": "An error occurred",
+    "test": "Test succeeded",
+    "ask": "You have a question to answer",
+    "plan": "Plan awaiting approval",
+    "manual": "Notification",
+}
+# ป้ายฟิลด์ในการ์ด แยกตามภาษา (สรุป / โปรเจกต์ / เวลา / ผู้ส่ง)
+LABELS = {
+    "th": {"summary": "สรุป", "project": "Project", "time": "เวลา", "from": "From"},
+    "en": {"summary": "Summary", "project": "Project", "time": "Time", "from": "From"},
+}
+
+
+def _norm_lang(v, default="th"):
+    """normalize ค่า config ภาษา → "th" หรือ "en" (รับ th/thai/en/english ฯลฯ)"""
+    v = (v or "").strip().lower()
+    if v in ("en", "eng", "english"):
+        return "en"
+    if v in ("th", "tha", "thai"):
+        return "th"
+    return default
+
+
+def _title(event, lang="th"):
+    table = TITLES_EN if lang == "en" else TITLES
+    return table.get(event, table["manual"])
+
+
+def _status(event, lang="th"):
+    table = STATUS_EN if lang == "en" else STATUS_TH
+    return table.get(event, table["manual"])
+
 
 def _has_thai(s):
     """มีอักษรไทยอย่างน้อยหนึ่งตัวไหม"""
@@ -92,14 +137,16 @@ def _clean_md(line):
     return s.strip()
 
 
-def short_summary(event, body, limit=200):
-    """สร้างข้อความสรุปสั้น ๆ (เน้นภาษาไทย) ว่า 'สรุปเป็นยังไง'
+def short_summary(event, body, limit=200, lang="th"):
+    """สร้างข้อความสรุปสั้น ๆ ว่า 'สรุปเป็นยังไง' (heuristic ไม่พึ่ง AI)
 
     - ดึงเนื้อหาต้น ๆ ของ body มาตัด markdown แล้วย่อให้สั้น
-    - ถ้าไม่มีเนื้อหา ใช้สถานะภาษาไทยตาม event
-    - ถ้าเนื้อหาไม่มีภาษาไทยเลย เติมสถานะไทยนำหน้าให้เสมอ
+    - ถ้าไม่มีเนื้อหา ใช้คำสถานะตาม event ในภาษาที่เลือก
+    - โหมดไทย: ถ้าเนื้อหาไม่มีภาษาไทยเลย เติมสถานะไทยนำหน้าให้ "รู้สึกเป็นไทย"
+    - โหมดอังกฤษ: คืน gist ตามจริง (เส้นทางหลักของ event stop ใช้ AI แปลเป็น
+      อังกฤษให้อยู่แล้ว; heuristic เป็น fallback จึงไม่ฝืนแปลเนื้อหาเอง)
     """
-    status = STATUS_TH.get(event, STATUS_TH["manual"])
+    status = _status(event, lang)
     if not body:
         return status
 
@@ -115,7 +162,7 @@ def short_summary(event, body, limit=200):
             cut = cut[:sp].rstrip()
         gist = cut + "…"
 
-    if not _has_thai(gist):            # เนื้อหาเป็นภาษาอังกฤษล้วน -> เติมไทยนำหน้า
+    if lang != "en" and not _has_thai(gist):   # เนื้อหาอังกฤษล้วน (โหมดไทย) -> เติมไทยนำหน้า
         return f"{status}: {gist}"
     return gist
 
@@ -152,9 +199,15 @@ def load_config():
     teams = (cfg.get("teams_webhook_url") or "").strip()
     teams = os.environ.get("TEAMS_WEBHOOK_URL", teams).strip()
 
+    # ภาษาข้อความที่ส่งเข้า Teams: "en" (ดีฟอลต์) หรือ "th"
+    teams_language = _norm_lang(
+        os.environ.get("TEAMS_LANGUAGE", cfg.get("teams_language", "")), "en"
+    )
+
     return {
         "webhook_url": webhook,
         "teams_webhook_url": teams,
+        "teams_language": teams_language,
         "anthropic_api_key": api_key,
         "oauth_token": oauth_token,
         # ขอ token สดจาก `ant auth print-credentials` ตอนเรียก (auto-refresh)
@@ -439,21 +492,30 @@ def resolve_auth(config):
     return None, ""
 
 
-def ai_summary(body, auth, timeout=6):
-    """เรียก Claude (Haiku) สรุปเป็นไทย 1-2 ประโยค — คืน None ถ้าพลาด (ให้ fallback)
+def ai_summary(body, auth, timeout=6, lang="th"):
+    """เรียก Claude (Haiku) สรุป 1-2 ประโยค — คืน None ถ้าพลาด (ให้ fallback)
 
+    lang = "th" (ดีฟอลต์) หรือ "en" กำหนดภาษาของบทสรุปที่ให้ AI ตอบกลับ
     auth = (scheme, token) โดย scheme เป็น "bearer" (OAuth) หรือ "x-api-key"
     ใช้ urllib ล้วน ไม่พึ่ง SDK เพื่อคงสภาพ zero-dependency ของโปรเจกต์
     """
     scheme, token = auth
     if not token:
         return None
-    system = (
-        "คุณคือผู้ช่วยสรุปงานของ Claude Code ให้ผู้ใช้ชาวไทย "
-        "สรุปข้อความต่อไปนี้เป็นภาษาไทยสั้น ๆ ไม่เกิน 1-2 ประโยค (ราว 120 ตัวอักษร) "
-        "เน้นใจความว่าทำอะไรเสร็จหรือติดปัญหาอะไร "
-        "ตอบเฉพาะบทสรุปล้วน ๆ ห้ามมีคำนำ ห้ามใช้ markdown"
-    )
+    if lang == "en":
+        system = (
+            "You summarize Claude Code's work for the user. "
+            "Summarize the message below in English in 1-2 short sentences "
+            "(around 120 characters), focusing on what was accomplished or what "
+            "problem was hit. Reply with only the summary — no preamble, no markdown."
+        )
+    else:
+        system = (
+            "คุณคือผู้ช่วยสรุปงานของ Claude Code ให้ผู้ใช้ชาวไทย "
+            "สรุปข้อความต่อไปนี้เป็นภาษาไทยสั้น ๆ ไม่เกิน 1-2 ประโยค (ราว 120 ตัวอักษร) "
+            "เน้นใจความว่าทำอะไรเสร็จหรือติดปัญหาอะไร "
+            "ตอบเฉพาะบทสรุปล้วน ๆ ห้ามมีคำนำ ห้ามใช้ markdown"
+        )
     headers = {
         "content-type": "application/json",
         "anthropic-version": "2023-06-01",
@@ -489,9 +551,10 @@ def ai_summary(body, auth, timeout=6):
         return None
 
 
-def resolve_summary(event, body, config):
+def resolve_summary(event, body, config, lang="th"):
     """เลือกวิธีสรุป: ใช้ AI เฉพาะตอนงานเสร็จ (stop) + มี auth + เนื้อหายาวพอ
 
+    lang = "th" (ดีฟอลต์) หรือ "en" — ส่งต่อให้ทั้ง AI และ heuristic
     เหตุการณ์อื่น (ask/plan/notification/error) ใช้ heuristic เร็ว ๆ ไม่หน่วง
     (PreToolUse ยิงก่อน tool ทำงาน จึงไม่อยากให้ช้าเพราะรอ API)
     """
@@ -500,10 +563,10 @@ def resolve_summary(event, body, config):
     if event == "stop" and body and use_ai and len(body) > 160:
         auth = resolve_auth(config)
         if auth[1]:
-            s = ai_summary(body, auth)
+            s = ai_summary(body, auth, lang=lang)
             if s:
                 return s
-    return short_summary(event, body)
+    return short_summary(event, body, lang=lang)
 
 
 def build_payload(event, text, payload, config=None, summary=None):
@@ -545,21 +608,28 @@ TEAMS_COLORS = {
 }
 
 
-def build_teams_payload(event, text, payload, config=None, summary=None):
-    """สร้าง payload ให้ Microsoft Teams (Adaptive Card ผ่าน Workflows webhook)"""
+def build_teams_payload(event, text, payload, config=None, summary=None, lang=None):
+    """สร้าง payload ให้ Microsoft Teams (Adaptive Card ผ่าน Workflows webhook)
+
+    lang = "th"/"en" ควบคุมภาษาการ์ด (หัวข้อ/ป้าย/สรุป); None = อ่านจาก
+    config["teams_language"] (ดีฟอลต์ en) ให้เรียกแบบ standalone ได้ด้วย
+    """
     config = config or {}
+    if lang is None:
+        lang = _norm_lang(config.get("teams_language"), "en")
     proj = project_name(payload)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if summary is None:
-        summary = resolve_summary(event, resolve_body(event, text, payload), config)
+        summary = resolve_summary(event, resolve_body(event, text, payload), config, lang)
 
+    labels = LABELS["en"] if lang == "en" else LABELS["th"]
     facts = [
-        {"title": "📁 Project", "value": proj},
-        {"title": "🕒 เวลา", "value": ts},
+        {"title": f"📁 {labels['project']}", "value": proj},
+        {"title": f"🕒 {labels['time']}", "value": ts},
     ]
     sender = config.get("sender_name")
     if sender:  # ห้องรวมหลายคน: บอกว่าอันนี้ของใคร
-        facts.append({"title": "👤 From", "value": sender})
+        facts.append({"title": f"👤 {labels['from']}", "value": sender})
 
     card = {
         "type": "AdaptiveCard",
@@ -569,10 +639,10 @@ def build_teams_payload(event, text, payload, config=None, summary=None):
             # แถบหัวมีพื้นหลังสีตามสถานะ (bleed = ขยายเต็มขอบการ์ด) เห็นสถานะปราดเดียว
             {"type": "Container", "style": TEAMS_COLORS.get(event, "default"),
              "bleed": True, "items": [
-                {"type": "TextBlock", "text": TITLES.get(event, TITLES["manual"]),
+                {"type": "TextBlock", "text": _title(event, lang),
                  "weight": "Bolder", "size": "Medium", "wrap": True},
             ]},
-            {"type": "TextBlock", "text": f"📝 **สรุป:** {summary}", "wrap": True},
+            {"type": "TextBlock", "text": f"📝 **{labels['summary']}:** {summary}", "wrap": True},
             {"type": "FactSet", "facts": facts},
         ],
     }
@@ -699,19 +769,29 @@ def main():
     def _valid_url(u):
         return bool(u) and u.startswith("https://") and not u.startswith("<")
 
-    # คำนวณสรุปครั้งเดียว แล้วแชร์ให้ทุกช่องทาง (กัน AI ยิงซ้ำ)
-    summary = resolve_summary(event, resolve_body(event, text, payload), config)
+    # คำนวณสรุป "ครั้งเดียวต่อภาษา" แล้วแคชไว้ — ถ้าทุกช่องภาษาเดียวกันก็ใช้ร่วม
+    # (กัน AI ยิงซ้ำ); Teams เลือกภาษาได้ผ่าน teams_language ส่วน Discord เป็นไทย
+    body = resolve_body(event, text, payload)
+    discord_lang = "th"
+    teams_lang = _norm_lang(config.get("teams_language"), "en")
+    _summaries = {}
+
+    def summary_for(lang):
+        if lang not in _summaries:
+            _summaries[lang] = resolve_summary(event, body, config, lang)
+        return _summaries[lang]
 
     channels = []
     if _valid_url(config.get("webhook_url")):
         channels.append((
             "Discord", config["webhook_url"],
-            build_payload(event, text, payload, config, summary=summary),
+            build_payload(event, text, payload, config, summary=summary_for(discord_lang)),
         ))
     if _valid_url(config.get("teams_webhook_url")):
         channels.append((
             "Teams", config["teams_webhook_url"],
-            build_teams_payload(event, text, payload, config, summary=summary),
+            build_teams_payload(event, text, payload, config,
+                                summary=summary_for(teams_lang), lang=teams_lang),
         ))
 
     if not channels:

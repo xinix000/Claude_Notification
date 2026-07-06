@@ -41,6 +41,7 @@ az ad signed-in-user show --query id -o tsv    # พิมพ์ GUID ออก�
 ```json
 {
   "teams_webhook_url": "<ขอ URL ห้องจากหัวหน้าทีม / คนที่ตั้ง Workflow>",
+  "teams_language": "en",
   "teams_mention_id": "<GUID ของคุณจากขั้น 2>",
   "teams_mention_name": "<ชื่อคุณ เช่น Kittana>",
   "sender_name": "<ชื่อคุณ — โชว์ช่อง 'From' ให้รู้ว่าการ์ดไหนของใคร>",
@@ -48,6 +49,7 @@ az ad signed-in-user show --query id -o tsv    # พิมพ์ GUID ออก�
 }
 ```
 > - `notify_config.json` ถูก `.gitignore` แล้ว — **ห้าม commit** (มี URL ลับ)
+> - `teams_language` = **ภาษาของการ์ดที่ส่งเข้า Teams**: `"en"` (ดีฟอลต์) หรือ `"th"` — ห้องรวมทีมนานาชาติใช้ `"en"` (หัวข้อ/ป้าย/สรุปเป็นอังกฤษ; ตอนงานเสร็จ AI จะสรุปเป็นอังกฤษให้); อยากได้ไทยตั้ง `"th"`. ไม่กระทบ Discord ซึ่งยังเป็นไทยเสมอ
 > - ไม่อยากส่ง Discord ด้วย → ปล่อย `webhook_url` เป็น `""` (หรือลบทิ้ง)
 > - อยากได้ **สรุปด้วย AI** (Haiku) ตอนงานเสร็จ → ใส่ `anthropic_api_key`; ไม่ใส่ก็ใช้สรุปแบบตัดคำ
 
