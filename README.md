@@ -2,9 +2,10 @@
 
 แจ้งเตือนเข้า **Discord และ/หรือ Microsoft Teams** อัตโนมัติเมื่อ Claude Code:
 - ✅ ทำงานเสร็จ (`Stop`) — สีเขียว
+- 🔐 ขอ permission รอคุณอนุมัติ (`PermissionRequest`) — สีส้มเข้ม
 - ❓ มีคำถามให้ตอบ (`PreToolUse` / AskUserQuestion) — สีส้ม
 - 📋 เสนอแผน รออนุมัติ (`PreToolUse` / ExitPlanMode) — สีม่วง
-- 🔔 ขอสิทธิ์ / รออินพุต (`Notification`) — สีเหลือง
+- 🔔 รออินพุต / idle (`Notification` — ยิงเฉพาะ CLI) — สีเหลือง
 - ⛔ เกิด error (เรียกสคริปต์เอง) — สีแดง
 
 > แต่ละการแจ้งเตือนเป็น **📝 สรุปสั้น ๆ ภาษาไทยแค่ 1 ย่อหน้า** อ่านปราดเดียวรู้เรื่อง — ไม่ดั๊มพ์ข้อความเต็มให้รก
@@ -39,7 +40,7 @@
   - `oauth_from_ant: true` — ขอ token สดจาก `ant auth print-credentials` (auto-refresh, OAuth ถูกวิธี) · ต้องลง [`ant` CLI](https://platform.claude.com/docs/en/api/sdks/cli) + `ant auth login` ก่อน
 - `ai_summary` — `true`/`false` เปิด-ปิดสรุปด้วย AI (ดีฟอลต์ `true` เมื่อมี key/token)
 - `mention_user_id` — Discord user id ของคุณ เพื่อ **แท็ก @ (มือถือเด้งแรง)** ตอน event สำคัญ
-- `mention_events` — เลือกว่าจะแท็กตอนไหน (ดีฟอลต์ `["stop","error","ask","plan","notification"]` = ทุก event) · หมายเหตุ: `stop` ยิงทุกครั้งที่ Claude ตอบจบ ตอนนั่งทำงานอยู่จะ ping ทุกเทิร์น — ถ้ารำคาญเอา `stop` ออกได้ (แต่ใน Teams ที่ตั้ง channel = Off ต้องมี `stop` ไม่งั้นงานเสร็จแล้วเงียบ)
+- `mention_events` — เลือกว่าจะแท็กตอนไหน (ดีฟอลต์ `["stop","error","ask","plan","notification","permission"]` = ทุก event) · หมายเหตุ: `stop` ยิงทุกครั้งที่ Claude ตอบจบ ตอนนั่งทำงานอยู่จะ ping ทุกเทิร์น — ถ้ารำคาญเอา `stop` ออกได้ (แต่ใน Teams ที่ตั้ง channel = Off ต้องมี `stop` ไม่งั้นงานเสร็จแล้วเงียบ)
 - `sender_name` — ชื่อ/ตัวระบุผู้ส่ง โชว์ช่อง **👤 From** ในการ์ด (ห้องรวมหลายคนจะได้รู้ว่าอันไหนของใคร; เว้นว่าง = ไม่โชว์)
 - `teams_webhook_url` — ส่งเข้า **Microsoft Teams** ด้วย (ตั้งพร้อม Discord หรือใช้อย่างเดียวก็ได้) → วิธีเอา URL ดู [ส่งเข้า Microsoft Teams](#5-ออปชัน-ส่งเข้า-microsoft-teams)
 - `teams_language` — ภาษาของการ์ดที่ส่งเข้า **Teams**: `"en"` (ดีฟอลต์) หรือ `"th"` (หัวข้อ/ป้าย/สรุปเป็นภาษาที่เลือก; ตอนงานเสร็จ AI สรุปให้ตามภาษานั้น). เฉพาะ Teams — Discord ยังเป็นไทยเสมอ
@@ -55,7 +56,7 @@ python notify.py --test
 
 ### 4) ติดตั้ง hook (แจ้งเตือนอัตโนมัติ)
 **ดับเบิลคลิก [`setup_hook.bat`](setup_hook.bat)** (หรือรัน `python notify.py --install-hooks`)
-สคริปต์จะเพิ่ม hook `Stop` + `Notification` + `PreToolUse` ลง **user-level settings** (`%USERPROFILE%\.claude\settings.json`)
+สคริปต์จะเพิ่ม hook `Stop` + `Notification` + `PermissionRequest` + `PreToolUse` ลง **user-level settings** (`%USERPROFILE%\.claude\settings.json`)
 โดย merge กับ hook เดิมที่มีอยู่ ไม่ทับของเก่า แล้ว **รีสตาร์ต Claude Code** หนึ่งครั้ง
 
 > ถอนออกเมื่อไรก็ได้ด้วย `python notify.py --uninstall-hooks`
@@ -87,11 +88,14 @@ python notify.py --test   # ทดสอบทุกช่องทางที�
 | เหตุการณ์ | Hook (matcher) | Embed |
 |-----------|------|-------|
 | Claude ตอบจบ / งานเสร็จ | `Stop` | 🟢 ✅ + 📝 สรุปไทย (Haiku ถ้ามี key) |
+| Claude ขอ permission | `PermissionRequest` | 🟠 🔐 + tool และคำสั่ง/ไฟล์ที่ขอ |
 | Claude ถามคำถาม | `PreToolUse` (`AskUserQuestion`) | 🟠 ❓ + คำถาม |
 | Claude เสนอแผน | `PreToolUse` (`ExitPlanMode`) | 🟣 📋 + แผน |
-| Claude ขอสิทธิ์ / idle | `Notification` | 🟡 🔔 + ข้อความ |
+| Claude รออินพุต / idle (เฉพาะ CLI) | `Notification` | 🟡 🔔 + ข้อความ |
 
 > **ทำไมต้อง `PreToolUse`?** hook `Notification` ของ Claude Code **ไม่ยิงตอน AskUserQuestion/ExitPlanMode** (เป็นข้อจำกัดที่รู้กัน — [#59908](https://github.com/anthropics/claude-code/issues/59908)) เลยต้องดักที่ `PreToolUse` แทน; เป็น passive (exit 0) ไม่บล็อกการทำงานของ Claude
+>
+> **ทำไมต้อง `PermissionRequest`?** hook `Notification` **ไม่ยิงเลยใน desktop app / VS Code extension** ([#35541](https://github.com/anthropics/claude-code/issues/35541), [#11156](https://github.com/anthropics/claude-code/issues/11156)) — ยิงเฉพาะ CLI ในเทอร์มินัล การแจ้ง "ขอ permission" จึงใช้ hook `PermissionRequest` (มีตั้งแต่ Claude Code ~2.1) ซึ่งยิงจาก engine ตรงจุดที่ permission dialog ขึ้น จึงเด้งครบทุกหน้าจอ และได้รายละเอียดดีกว่า (รู้ว่า tool ไหนจะรันคำสั่ง/แก้ไฟล์อะไร) · ใน CLI ที่ทั้งสอง hook ยิงพร้อมกัน สคริปต์จะ**ข้ามใบ `Notification` ที่เป็นเรื่อง permission ให้อัตโนมัติ** (กันเด้งซ้ำ) เหลือ `Notification` ไว้จับตอน idle รออินพุต
 >
 > **สรุปมาจากไหน?** ปกติดึงข้อความล่าสุดของ Claude มาตัด markdown ย่อสั้น (≤ 200 ตัว, ไทยอยู่แล้ว → สรุปเป็นไทย, อังกฤษล้วน → เติมสถานะไทยนำหน้า). ตอน `Stop` ถ้ามี `anthropic_api_key` จะให้ **Claude Haiku สรุปเป็นไทย 1-2 ประโยค** ที่ตรงประเด็นกว่า (~$0.001–0.003/ครั้ง; มี fallback อัตโนมัติถ้า API ล่ม/ช้าเกิน 6 วิ)
 

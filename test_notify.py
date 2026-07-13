@@ -78,8 +78,67 @@ class TestResolveBody(unittest.TestCase):
         payload = {"tool_input": {"plan": "ขั้นที่ 1 ทำ X"}}
         self.assertEqual(notify.resolve_body("plan", None, payload), "ขั้นที่ 1 ทำ X")
 
+    def test_permission_shows_tool_and_command(self):
+        payload = {"tool_name": "Bash", "tool_input": {"command": "git push origin main"}}
+        self.assertEqual(
+            notify.resolve_body("permission", None, payload),
+            "Bash: git push origin main",
+        )
+
+    def test_permission_file_path_fallback(self):
+        payload = {"tool_name": "Write", "tool_input": {"file_path": r"C:\proj\a.py",
+                                                        "content": "x" * 999}}
+        # file_path มาก่อน content dump (อ่านง่ายกว่า)
+        self.assertEqual(notify.resolve_body("permission", None, payload),
+                         r"Write: C:\proj\a.py")
+
+    def test_permission_tool_only(self):
+        self.assertEqual(
+            notify.resolve_body("permission", None, {"tool_name": "WebSearch"}),
+            "WebSearch",
+        )
+
     def test_text_overrides(self):
         self.assertEqual(notify.resolve_body("stop", "ข้อความมือ", {}), "ข้อความมือ")
+
+
+class TestDeriveEvent(unittest.TestCase):
+    def test_cli_event_wins(self):
+        self.assertEqual(notify.derive_event("stop", {"hook_event_name": "Notification"}),
+                         "stop")
+
+    def test_permission_request_maps(self):
+        payload = {"hook_event_name": "PermissionRequest", "tool_name": "Bash"}
+        self.assertEqual(notify.derive_event(None, payload), "permission")
+        self.assertEqual(notify.derive_event("permission", {}), "permission")
+
+    def test_subagent_stop_maps_to_stop(self):
+        self.assertEqual(notify.derive_event(None, {"hook_event_name": "SubagentStop"}),
+                         "stop")
+
+    def test_pretooluse_maps_by_tool(self):
+        self.assertEqual(
+            notify.derive_event(None, {"hook_event_name": "PreToolUse",
+                                       "tool_name": "AskUserQuestion"}), "ask")
+        self.assertEqual(
+            notify.derive_event(None, {"hook_event_name": "PreToolUse",
+                                       "tool_name": "ExitPlanMode"}), "plan")
+
+
+class TestShouldSkip(unittest.TestCase):
+    def test_skips_permission_notification(self):
+        # CLI ยิงทั้ง Notification("...permission...") และ PermissionRequest
+        # → ใบ Notification ต้องถูกข้าม กันเด้งซ้ำ
+        payload = {"message": "Claude needs your permission to use Bash"}
+        self.assertIsNotNone(notify.should_skip("notification", payload))
+
+    def test_keeps_idle_notification(self):
+        payload = {"message": "Claude is waiting for your input"}
+        self.assertIsNone(notify.should_skip("notification", payload))
+
+    def test_never_skips_permission_event(self):
+        payload = {"tool_name": "Bash", "tool_input": {"command": "ls"}}
+        self.assertIsNone(notify.should_skip("permission", payload))
 
 
 class TestResolveSummary(unittest.TestCase):
@@ -156,11 +215,14 @@ class TestHookInstall(unittest.TestCase):
         path = self._tmp()
         notify.install_hooks(path)
         data = json.loads(path.read_text(encoding="utf-8"))
-        for ev in ("Stop", "Notification", "PreToolUse"):
+        for ev in ("Stop", "Notification", "PermissionRequest", "PreToolUse"):
             self.assertIn(ev, data["hooks"])
             self.assertEqual(len(data["hooks"][ev]), 1)
         self.assertEqual(
             data["hooks"]["PreToolUse"][0]["matcher"], "AskUserQuestion|ExitPlanMode"
+        )
+        self.assertEqual(
+            data["hooks"]["PermissionRequest"][0]["hooks"][0]["args"][-1], "permission"
         )
 
     def test_install_idempotent(self):
@@ -168,7 +230,7 @@ class TestHookInstall(unittest.TestCase):
         for _ in range(3):
             notify.install_hooks(path)
         data = json.loads(path.read_text(encoding="utf-8"))
-        for ev in ("Stop", "Notification", "PreToolUse"):
+        for ev in ("Stop", "Notification", "PermissionRequest", "PreToolUse"):
             self.assertEqual(len(data["hooks"][ev]), 1)  # รัน 3 รอบต้องไม่ซ้ำ
 
     def test_install_preserves_existing(self):
@@ -195,6 +257,7 @@ class TestHookInstall(unittest.TestCase):
         data = json.loads(path.read_text(encoding="utf-8"))
         self.assertIn("PostToolUse", data["hooks"])  # ของคนอื่นยังอยู่
         self.assertNotIn("Stop", data["hooks"])
+        self.assertNotIn("PermissionRequest", data["hooks"])
         self.assertNotIn("PreToolUse", data["hooks"])
 
 

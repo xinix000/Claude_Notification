@@ -10,7 +10,7 @@
   "ai_summary": true,
 
   "mention_user_id": "",
-  "mention_events": ["stop", "error", "ask", "plan", "notification"],
+  "mention_events": ["stop", "error", "ask", "plan", "notification", "permission"],
 
   "teams_mention_id": "",
   "teams_mention_name": "",

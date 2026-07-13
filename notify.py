@@ -43,6 +43,7 @@ LOG_PATH = HERE / "notify.log"
 COLORS = {
     "stop": 0x2ECC71,          # เขียว = งานเสร็จ
     "notification": 0xF1C40F,  # เหลือง = รอคุณตอบ
+    "permission": 0xE67E22,    # ส้มเข้ม = ขอ permission
     "error": 0xE74C3C,         # แดง = error
     "test": 0x3498DB,          # ฟ้า = ทดสอบ
     "ask": 0xF39C12,           # ส้ม = มีคำถาม
@@ -52,6 +53,7 @@ COLORS = {
 TITLES = {
     "stop": "✅ Claude ทำงานเสร็จแล้ว",
     "notification": "🔔 Claude ต้องการให้คุณตอบ/ยืนยัน",
+    "permission": "🔐 Claude ขอ permission — รอคุณอนุมัติ",
     "error": "⛔ เกิด error",
     "test": "🧪 ทดสอบการเชื่อมต่อ Discord สำเร็จ",
     "ask": "❓ Claude มีคำถามให้คุณตอบ",
@@ -63,6 +65,7 @@ TITLES = {
 STATUS_TH = {
     "stop": "งานเสร็จแล้ว",
     "notification": "รอคุณตอบ/ยืนยัน",
+    "permission": "รอคุณอนุมัติ permission",
     "error": "เกิดข้อผิดพลาด",
     "test": "ทดสอบสำเร็จ",
     "ask": "มีคำถามรอคุณตอบ",
@@ -74,6 +77,7 @@ STATUS_TH = {
 TITLES_EN = {
     "stop": "✅ Claude finished the task",
     "notification": "🔔 Claude needs your input",
+    "permission": "🔐 Claude requests permission",
     "error": "⛔ An error occurred",
     "test": "🧪 Connection test succeeded",
     "ask": "❓ Claude has a question for you",
@@ -83,6 +87,7 @@ TITLES_EN = {
 STATUS_EN = {
     "stop": "Task finished",
     "notification": "Awaiting your input",
+    "permission": "Awaiting permission approval",
     "error": "An error occurred",
     "test": "Test succeeded",
     "ask": "You have a question to answer",
@@ -218,7 +223,10 @@ def load_config():
         "ai_summary": bool(cfg.get("ai_summary", True)),
         # แท็ก @ ตอน event สำคัญ ให้มือถือเด้งชัด (default: error + ตอนรอคุณ)
         "mention_user_id": (cfg.get("mention_user_id") or "").strip(),
-        "mention_events": cfg.get("mention_events", ["stop", "error", "ask", "plan", "notification"]),
+        "mention_events": cfg.get(
+            "mention_events",
+            ["stop", "error", "ask", "plan", "notification", "permission"],
+        ),
         # Teams @mention: id = email/UPN หรือ AAD object id, name = ชื่อที่โชว์ในแท็ก
         "teams_mention_id": (cfg.get("teams_mention_id") or "").strip(),
         "teams_mention_name": (cfg.get("teams_mention_name") or "").strip(),
@@ -242,14 +250,17 @@ def _load_settings(path):
 
 
 # hook events ที่สคริปต์นี้ดูแล (ใช้ทั้งตอน install / uninstall)
-HOOK_EVENTS = ("Stop", "Notification", "PreToolUse")
+HOOK_EVENTS = ("Stop", "Notification", "PermissionRequest", "PreToolUse")
 
 
 def install_hooks(path=None):
     """ติดตั้ง hook ลง user-level settings.json (merge ไม่ทับของเดิม)
 
-    - Stop         → งานเสร็จ
-    - Notification → ขอสิทธิ์ / รอ idle
+    - Stop              → งานเสร็จ
+    - Notification      → รอ input/idle (ยิงเฉพาะ CLI; ใบที่เป็นเรื่อง permission
+                          สคริปต์ข้ามให้ เพราะ PermissionRequest ครอบคลุมแล้ว)
+    - PermissionRequest → Claude ขอ permission — ยิงจาก engine โดยตรง จึงเด้งแม้ใน
+      desktop app / VS Code ที่ hook Notification ไม่ทำงาน (ต้อง Claude Code ≥ 2.1.x)
     - PreToolUse (AskUserQuestion|ExitPlanMode) → ตอน Claude ถาม/เสนอแผน
       (สำคัญ: Notification hook ของ Claude Code ไม่ยิงให้ AskUserQuestion
        จึงต้องดักที่ PreToolUse แทน — passive ไม่บล็อก tool)
@@ -264,7 +275,8 @@ def install_hooks(path=None):
     # (event_name, matcher, event_arg, statusMessage)
     specs = [
         ("Stop", None, "stop", "แจ้งเตือน Discord (งานเสร็จ)"),
-        ("Notification", None, "notification", "แจ้งเตือน Discord (ขอสิทธิ์/รอ)"),
+        ("Notification", None, "notification", "แจ้งเตือน Discord (รอ input)"),
+        ("PermissionRequest", None, "permission", "แจ้งเตือน Discord (ขอ permission)"),
         ("PreToolUse", "AskUserQuestion|ExitPlanMode", None,
          "แจ้งเตือน Discord (มีคำถาม/แผน)"),
     ]
@@ -400,11 +412,51 @@ def resolve_body(event, text, payload):
     if event == "plan":  # PreToolUse ของ ExitPlanMode → ดึงแผน
         ti = payload.get("tool_input") or {}
         return ti.get("plan") or payload.get("message", "")
+    if event == "permission":  # PermissionRequest → บอกว่า tool ไหนกำลังจะทำอะไร
+        tool = payload.get("tool_name") or ""
+        ti = payload.get("tool_input") or {}
+        detail = ""
+        if isinstance(ti, dict):
+            for key in ("command", "file_path", "url", "prompt", "description"):
+                v = ti.get(key)
+                if isinstance(v, str) and v.strip():
+                    detail = v.strip()
+                    break
+            if not detail and ti:
+                detail = json.dumps(ti, ensure_ascii=False)
+        got = f"{tool}: {detail}" if (tool and detail) else (tool or detail)
+        return got or payload.get("message", "")
     if event in ("notification", "error"):
         return payload.get("message", "")
     if event == "test":
         return "ถ้าคุณเห็นข้อความนี้ แปลว่าตั้งค่าถูกต้องแล้ว 🎉"
     return ""
+
+
+def derive_event(cli_event, payload):
+    """แปลง (--event, payload จาก hook) → ชื่อ event ภายใน (stop/ask/plan/permission/…)"""
+    event = (cli_event or payload.get("hook_event_name") or "").lower()
+    if event == "subagentstop":
+        event = "stop"
+    if event == "permissionrequest":  # hook PermissionRequest → ขอ permission
+        event = "permission"
+    if event == "pretooluse":
+        # Notification hook ไม่ยิงให้ AskUserQuestion — เราดักที่ PreToolUse แทน
+        tool = (payload.get("tool_name") or "").lower()
+        event = {"askuserquestion": "ask", "exitplanmode": "plan"}.get(tool, "notification")
+    return event
+
+
+def should_skip(event, payload):
+    """event ที่มี hook อื่นครอบคลุมอยู่แล้ว → ข้าม กันเด้งซ้ำ (คืนเหตุผล หรือ None)
+
+    ใน CLI ตอน permission dialog ขึ้น จะยิงทั้ง Notification (ข้อความ
+    "Claude needs your permission to use X") และ PermissionRequest —
+    ฝั่ง PermissionRequest ให้รายละเอียดดีกว่า (รู้ tool + คำสั่ง) จึงเก็บอันนั้นไว้
+    """
+    if event == "notification" and "permission" in (payload.get("message") or "").lower():
+        return "notification เรื่อง permission — PermissionRequest hook ดูแลอยู่แล้ว"
+    return None
 
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
@@ -603,8 +655,9 @@ def build_payload(event, text, payload, config=None, summary=None):
 
 # สี Adaptive Card ของ Teams (มีชุดจำกัด ไม่ใช่ hex อิสระแบบ Discord)
 TEAMS_COLORS = {
-    "stop": "good", "notification": "warning", "error": "attention",
-    "test": "accent", "ask": "warning", "plan": "accent", "manual": "default",
+    "stop": "good", "notification": "warning", "permission": "warning",
+    "error": "attention", "test": "accent", "ask": "warning", "plan": "accent",
+    "manual": "default",
 }
 
 
@@ -711,11 +764,13 @@ def send(webhook_url, data_obj, retries=2):
 
 def main():
     ap = argparse.ArgumentParser(description="ส่งการแจ้งเตือนเข้า Discord")
-    ap.add_argument("--event", default=None, help="stop | notification | error | test")
+    ap.add_argument("--event", default=None,
+                    help="stop | notification | permission | error | test")
     ap.add_argument("--text", default=None, help="ข้อความที่อยากส่ง")
     ap.add_argument("--test", action="store_true", help="ส่งข้อความทดสอบ")
     ap.add_argument("--install-hooks", action="store_true",
-                    help="ติดตั้ง Stop/Notification hook ลง user-level settings.json")
+                    help="ติดตั้ง hook แจ้งเตือน (Stop/Notification/PermissionRequest/"
+                         "PreToolUse) ลง user-level settings.json")
     ap.add_argument("--uninstall-hooks", action="store_true",
                     help="ถอน hook ของสคริปต์นี้ออกจาก user-level settings.json")
     ap.add_argument("positional", nargs="*", help="ข้อความ (แบบไม่ต้องใส่ --text)")
@@ -729,9 +784,10 @@ def main():
             return 1
         print("✅ ติดตั้ง hook ระดับ user (ใช้ได้ทุกโปรเจกต์) เรียบร้อย")
         print(f"   ไฟล์: {path}")
-        print("   • Stop         → แจ้งเตือนตอน Claude ทำงานเสร็จ")
-        print("   • Notification → แจ้งเตือนตอน Claude ขอสิทธิ์/รอ")
-        print("   • PreToolUse   → แจ้งเตือนตอน Claude ถามคำถาม/เสนอแผน")
+        print("   • Stop              → แจ้งเตือนตอน Claude ทำงานเสร็จ")
+        print("   • Notification      → แจ้งเตือนตอน Claude รอ input (CLI)")
+        print("   • PermissionRequest → แจ้งเตือนตอน Claude ขอ permission")
+        print("   • PreToolUse        → แจ้งเตือนตอน Claude ถามคำถาม/เสนอแผน")
         print()
         print("⚠️  รีสตาร์ต Claude Code (หรือเปิดเมนู /hooks หนึ่งครั้ง) เพื่อให้ hook มีผล")
         return 0
@@ -748,17 +804,16 @@ def main():
     payload = read_stdin_json()
     is_hook = bool(payload) and not args.test
 
-    event = (args.event or payload.get("hook_event_name") or "").lower()
-    if event == "subagentstop":
-        event = "stop"
-    if event == "pretooluse":
-        # Notification hook ไม่ยิงให้ AskUserQuestion — เราดักที่ PreToolUse แทน
-        tool = (payload.get("tool_name") or "").lower()
-        event = {"askuserquestion": "ask", "exitplanmode": "plan"}.get(tool, "notification")
+    event = derive_event(args.event, payload)
     if args.test:
         event = "test"
     if not event:
         event = "manual"
+
+    skip = should_skip(event, payload)
+    if skip:
+        log(f"ข้าม event={event}: {skip}")
+        return 0
 
     text = args.text
     if text is None and args.positional:
